@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Mon Système</title>
+  <meta name="description" content="Mon Système personnel : niveau, stats et quêtes du jour.">
+  <meta name="theme-color" content="#05070d">
+  <meta name="color-scheme" content="dark">
+
+  <!-- iPhone : mode plein écran quand l'app est ajoutée à l'écran d'accueil -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Système">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+
+  <link rel="stylesheet" href="style.css?v=1.0.0">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="topbar-tag">[SYSTÈME]</div>
+      <div class="topbar-title" id="topbar-title">Statut du joueur</div>
+    </header>
+
+    <main id="view" class="view" aria-live="polite"></main>
+
+    <footer class="version-line">Mon Système · v<span id="app-version"></span></footer>
+
+    <nav class="tabbar" aria-label="Navigation">
+      <button class="tab is-active" data-tab="home" type="button">
+        <span class="tab-icon" aria-hidden="true">◈</span><span class="tab-label">Accueil</span>
+      </button>
+      <button class="tab" data-tab="today" type="button">
+        <span class="tab-icon" aria-hidden="true">⚔</span><span class="tab-label">Aujourd'hui</span>
+      </button>
+      <button class="tab" data-tab="history" type="button">
+        <span class="tab-icon" aria-hidden="true">▤</span><span class="tab-label">Historique</span>
+      </button>
+      <button class="tab" data-tab="settings" type="button">
+        <span class="tab-icon" aria-hidden="true">⚙</span><span class="tab-label">Réglages</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Notifications "[SYSTÈME] ..." -->
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+  <!-- Fenêtres (modales / feuilles du bas) -->
+  <div id="modal-root"></div>
+
+  <noscript>
+    <p style="padding:24px;color:#9fdcff">[SYSTÈME] JavaScript doit être activé pour lancer le Système.</p>
+  </noscript>
+
+  <script src="app.js?v=1.0.0"></script>
+</body>
+</html>
