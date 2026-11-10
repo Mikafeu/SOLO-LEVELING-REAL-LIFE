@@ -114,10 +114,12 @@ function freshState() {
     lastExportAt: null,
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
     logs: [],
-    body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: null, age: null, waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
+    body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: 185, age: 21, sex: 'h', waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
     weights: [],
     meals: [],
     journals: [],
+    bilans: [],       // saisie du jour : ce que j'ai accompli / ce qui m'a fait perdre du temps
+    questCfg: { sport: 30, focus: 60, meals: 3, bilan: true },
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -183,8 +185,8 @@ function sanitizeState(raw) {
     if (inR(rb.goalFat, 5, 40)) s.body.goalFat = rb.goalFat;
     if (inR(rb.goalMuscle, 20, 60)) s.body.goalMuscle = rb.goalMuscle;
     if (isValidKey(rb.goalDate)) s.body.goalDate = rb.goalDate;
-    if (inR(rb.heightCm, 120, 230)) s.body.heightCm = rb.heightCm;
-    if (inR(rb.age, 10, 100)) s.body.age = rb.age;
+    s.body.heightCm = inR(rb.heightCm, 120, 230) ? rb.heightCm : 185; // 1,85 m
+    s.body.age = inR(rb.age, 10, 100) ? rb.age : 21;
     if (inR(rb.waistCm, 50, 200)) s.body.waistCm = rb.waistCm;
     if (inR(rb.neckCm, 25, 70)) s.body.neckCm = rb.neckCm;
     if (inR(rb.fatStart, 5, 60)) s.body.fatStart = rb.fatStart;
@@ -206,6 +208,17 @@ function sanitizeState(raw) {
       kcal: num(m.kcal), p: num(m.p), g: num(m.g), l: num(m.l),
       src: typeof m.src === 'string' ? m.src.slice(0, 10) : 'manuel',
     }));
+  s.bilans = (Array.isArray(raw.bilans) ? raw.bilans : [])
+    .filter(b => b && isValidKey(b.date) && (typeof b.good === 'string' || typeof b.bad === 'string'))
+    .map(b => ({ id: typeof b.id === 'string' ? b.id : uid(), date: b.date, ts: Number.isFinite(b.ts) ? b.ts : 0,
+      good: typeof b.good === 'string' ? b.good.slice(0, 1500) : '', bad: typeof b.bad === 'string' ? b.bad.slice(0, 1500) : '' }));
+  if (raw.questCfg && typeof raw.questCfg === 'object') {
+    const q = raw.questCfg;
+    s.questCfg = {
+      sport: inR(q.sport, 0, 600) ? q.sport : 30, focus: inR(q.focus, 0, 900) ? q.focus : 60,
+      meals: inR(q.meals, 0, 4) ? q.meals : 3, bilan: q.bilan !== false,
+    };
+  }
   s.journals = (Array.isArray(raw.journals) ? raw.journals : [])
     .filter(j => j && isValidKey(j.date) && typeof j.text === 'string')
     .map(j => ({
@@ -277,7 +290,10 @@ function gradeFor(v) {
   if (v >= 20) return 'D';
   return 'E';
 }
-const totalXp = () => state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP;
+/* Le corps compte aussi : chaque kg perdu vers l'objectif rapporte de l'XP, chaque kg repris en retire. */
+const BODY_XP_PER_KG = 300;
+const bodyXp = () => Math.round((state.body.startWeight - currentWeight()) * BODY_XP_PER_KG * (state.body.goalWeight <= state.body.startWeight ? 1 : -1));
+const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp());
 
 /* Recalcule les stats en "rejouant" chaque jour depuis la 1re donnée.
    Ainsi, supprimer une entrée corrige tout automatiquement.
@@ -285,7 +301,7 @@ const totalXp = () => state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(t
 let _seriesCache = { key: '', out: null };
 function computeStats(logs, today) {
   const nd = nutritionDays(today);
-  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',');
+  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',') + '|' + state.bilans.map(b => b.date + b.ts).join(',');
   if (logs === state.logs && _seriesCache.key === key) return _seriesCache.out;
   const values = {}, last = {};
   STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; });
@@ -311,8 +327,9 @@ function computeStats(logs, today) {
   }
   // journal du jour : la journée racontée est jugée (Concentration)
   const penalty = new Map();
+  const bilanDates = new Set(state.bilans.map(b => b.date));
   for (const j of state.journals) {
-    if (j.date > today) continue;
+    if (j.date > today || bilanDates.has(j.date)) continue; // le bilan du jour remplace l'ancien journal
     if (j.date < first) first = j.date;
     if (j.score > 0) {
       const o = byDay.get(j.date) || {};
@@ -320,6 +337,17 @@ function computeStats(logs, today) {
       o.discipline = (o.discipline || 0) + 0.3;
       byDay.set(j.date, o);
     } else if (j.score < 0) penalty.set(j.date, -j.score);
+  }
+  // bilan du jour : gains ET pertes réels (pas de bonus gratuit si la journée est négative)
+  const negDays = new Set();
+  for (const b of state.bilans) {
+    if (b.date > today) continue;
+    if (b.date < first) first = b.date;
+    const a = analyzeBilan(b, b.date);
+    const o = byDay.get(b.date) || {};
+    for (const k of STAT_KEYS) if (a.pts[k]) o[k] = (o[k] || 0) + a.pts[k];
+    if (a.net < 0) { negDays.add(b.date); o.discipline = (o.discipline || 0) - RULES.regularityBonus; }
+    byDay.set(b.date, o);
   }
   const start = state.startDate || first;
   if (start < first) first = start;
@@ -333,6 +361,10 @@ function computeStats(logs, today) {
         const eff = 1 - Math.exp(-pts / RULES.daySaturation);
         values[k] = Math.min(100, values[k] + RULES.gainRate * eff * (1 - values[k] / 100));
         last[k] = day;
+      } else if (pts < 0) {
+        // recul : plus rapide que la progression, et d'autant plus fort que la stat est haute
+        const loss = Math.min(2, 0.12 * -pts * (0.5 + values[k] / 100));
+        values[k] = Math.max(RULES.statMin, values[k] - loss);
       } else if (last[k] && daysBetween(last[k], day) > RULES.decayGraceDays) {
         values[k] = Math.max(RULES.statMin, values[k] * (1 - RULES.decayRate));
       }
@@ -435,7 +467,7 @@ function celebrate({ kind = 'win', title = '', icon = '', big = '', count = null
         <div class="cel-title">${esc(title)}</div>
         <div class="cel-big">${esc(big)}</div>
         ${sub ? `<div class="cel-sub">${esc(sub)}</div>` : ''}
-        ${chips.length ? `<div class="cel-chips">${chips.map((c, i) => `<span style="animation-delay:${450 + i * 120}ms">▲ ${esc(c)}</span>`).join('')}</div>` : ''}
+        ${chips.length ? `<div class="cel-chips">${chips.map((c, i) => { const neg = /[-−]\d/.test(c); return `<span class="${neg ? 'neg' : ''}" style="animation-delay:${450 + i * 120}ms">${neg ? '▼' : '▲'} ${esc(c)}</span>`; }).join('')}</div>` : ''}
         ${lines.map(l => `<div class="cel-line">${esc(l)}</div>`).join('')}
         <div class="cel-hint">Touche pour continuer</div>
       </div>`;
@@ -463,6 +495,93 @@ function celebrate({ kind = 'win', title = '', icon = '', big = '', count = null
 }
 
 /* =========================================================
+   EFFETS : sons, vibrations, chiffres qui défilent, flash
+   ========================================================= */
+const PREFS_KEY = 'monSysteme.prefs';
+const prefs = (() => { try { return { sound: true, vibrate: true, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; } catch (_) { return { sound: true, vibrate: true }; } })();
+const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (_) {} };
+
+let audioCtx = null;
+function sfx(kind) {
+  if (!prefs.sound) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const t0 = audioCtx.currentTime;
+    const notes = {
+      tap: [[880, 0, 0.05, 0.04]],
+      open: [[520, 0, 0.08, 0.05], [780, 0.05, 0.1, 0.04]],
+      success: [[660, 0, 0.09, 0.08], [880, 0.08, 0.1, 0.08], [1320, 0.16, 0.18, 0.07]],
+      levelup: [[392, 0, 0.18, 0.1], [523, 0.12, 0.18, 0.1], [659, 0.24, 0.18, 0.1], [1047, 0.36, 0.5, 0.09]],
+      fail: [[220, 0, 0.18, 0.09], [165, 0.14, 0.26, 0.09]],
+      penalty: [[140, 0, 0.3, 0.12], [110, 0.25, 0.4, 0.12]],
+    }[kind] || [];
+    for (const [f, at, dur, vol] of notes) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = kind === 'penalty' || kind === 'fail' ? 'sawtooth' : 'triangle';
+      o.frequency.setValueAtTime(f, t0 + at);
+      g.gain.setValueAtTime(0.0001, t0 + at);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t0 + at); o.stop(t0 + at + dur + 0.02);
+    }
+  } catch (_) {}
+}
+/* Vibration : navigator.vibrate (Android) ; sur iPhone (iOS 18+), un interrupteur caché déclenche le retour haptique */
+let hapticLabel = null;
+function haptic(times = 1) {
+  if (!prefs.vibrate) return;
+  if (navigator.vibrate) { navigator.vibrate(times > 1 ? [25, 50, 40, 50, 70] : 18); return; }
+  try {
+    if (!hapticLabel) {
+      hapticLabel = document.createElement('label');
+      hapticLabel.setAttribute('aria-hidden', 'true');
+      hapticLabel.style.cssText = 'position:fixed;left:-99px;top:0;width:1px;height:1px;overflow:hidden;opacity:0';
+      hapticLabel.innerHTML = '<input type="checkbox" switch>';
+      document.body.appendChild(hapticLabel);
+    }
+    for (let k = 0; k < times; k++) setTimeout(() => hapticLabel.click(), k * 110);
+  } catch (_) {}
+}
+
+/* Chiffres qui défilent : <b data-count-to="12.5" data-count-from="10" data-fmt="kg"> */
+const FMT = { int: v => fmtNum(v), kg: v => fmtKg(v), pct: v => fmtPct(v), stat: v => fmtStat(v), lvl: v => String(Math.round(v)) };
+function runCountUps(root = document) {
+  root.querySelectorAll('[data-count-to]').forEach(el => {
+    const to = +el.dataset.countTo, from = el.dataset.countFrom != null ? +el.dataset.countFrom : 0;
+    const f = FMT[el.dataset.fmt] || FMT.int;
+    if (!Number.isFinite(to) || !Number.isFinite(from) || from === to) { el.textContent = f(to); return; }
+    const dur = +(el.dataset.dur || 900), t0 = performance.now();
+    el.classList.add('counting');
+    const step = now => {
+      const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = f(from + (to - from) * e);
+      if (k < 1 && el.isConnected) requestAnimationFrame(step); else { el.classList.remove('counting'); el.classList.add('flash'); }
+    };
+    el.textContent = f(from);
+    requestAnimationFrame(step);
+  });
+  // barres : on part de l'ancienne largeur
+  root.querySelectorAll('[data-w-from]').forEach(el => {
+    const to = el.style.width;
+    el.style.transition = 'none';
+    el.style.width = el.dataset.wFrom + '%';
+    void el.offsetWidth;
+    el.style.transition = '';
+    requestAnimationFrame(() => { el.style.width = to; el.parentElement.classList.add('flash'); });
+  });
+}
+/* Valeurs affichées avant un changement (pour animer "avant → après") */
+const anim = { prev: null };
+function snapshotForAnim() {
+  const lv = levelInfo(totalXp());
+  const b = bodyProgress();
+  anim.prev = { level: lv.level, into: lv.into, need: lv.need, pct: (lv.into / lv.need) * 100, total: lv.total, rank: rankFor(lv.level).letter, progress: b.progress * 100, kg: b.cur };
+}
+const cf = (key, fallback) => (anim.prev && anim.prev[key] != null ? anim.prev[key] : fallback);
+
+/* =========================================================
    Navigation
    ========================================================= */
 const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', stats: 'Statistiques', history: 'Journal des quêtes', settings: 'Réglages' };
@@ -470,6 +589,7 @@ let currentTab = 'home';
 const ui = { calMonth: null, selectedDay: null, holoMode: 'now', holoRank: null, day0: false, statsTab: 'stats', chartKey: 'power', chartTf: 'J', photoPose: 'face', mealDay: null };
 
 function go(tab) {
+  if (tab !== currentTab) { sfx('open'); haptic(); }
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('is-active', t.dataset.tab === tab));
   $('#topbar-title').textContent = TITLES[tab];
@@ -481,8 +601,12 @@ function render() {
   const view = $('#view');
   const fn = { home: renderHome, today: renderToday, meals: renderMeals, stats: renderStatsTab, history: renderHistory, settings: renderSettings }[currentTab];
   view.innerHTML = fn();
-  view.style.animation = 'none'; void view.offsetWidth; view.style.animation = '';
+  // entrée "hologramme" : les blocs apparaissent en cascade
+  [...view.children].forEach((el, i) => { el.style.setProperty('--i', Math.min(i, 10)); el.classList.add('enter'); });
   if (currentTab === 'home') mountHolo();
+  runCountUps(view);
+  anim.prev = null;
+  scanSweep();
 }
 
 /* Affiche l'hologramme 3D dans l'Accueil (le module 3D se charge à part) */
@@ -510,36 +634,13 @@ function renderHome() {
   const started = today >= st.start;
   const journal = state.journals.find(j => j.date === today);
 
-  const statsHtml = STATS.map(s => {
+  const statsHtml = `<div class="sring-grid">${STATS.map(s => {
     const v = shown[s.key];
     const diff = st.values[s.key] - st.base[s.key];
     const inactive = st.last[s.key] ? daysBetween(st.last[s.key], today) : null;
-    let foot;
-    if (ui.day0) foot = `<span>Valeur au jour 0</span>`;
-    else if (inactive === null) foot = `<span>Pas encore entraînée</span>`;
-    else if (inactive > RULES.decayGraceDays) foot = `<span class="decay-warn">⚠ Inactive depuis ${inactive} j · en baisse</span>`;
-    else if (inactive === 0) foot = `<span>Entraînée aujourd'hui</span>`;
-    else foot = `<span>Dernière fois il y a ${inactive} j</span>`;
-    const trend = ui.day0 ? '' : !started ? `<span>Départ le ${fmtDayShort(st.start)}</span>`
-      : Math.abs(diff) < 0.05 ? `<span>= depuis le jour 0</span>`
-      : diff > 0 ? `<span class="trend-up">▲ +${fmtStat(diff)} depuis le jour 0</span>`
-      : `<span class="trend-down">▼ ${fmtStat(diff)} depuis le jour 0</span>`;
-    const plus = s.key === 'concentration' && !ui.day0
-      ? `<button type="button" class="stat-plus ${journal ? 'done' : ''}" data-action="journal" aria-label="Raconter ma journée">${journal ? '✓' : '＋'}</button>` : '';
-    return `
-      <div class="stat">
-        <div class="stat-row">
-          <div class="stat-icon">${s.icon}</div>
-          <div class="stat-name">${s.name}<small>${s.desc}</small></div>
-          ${plus}
-          <div class="stat-value">${fmtStat(v)}</div>
-          <div class="stat-grade">${gradeFor(v)}</div>
-        </div>
-        <div class="bar thin"><span style="width:${v}%"></span></div>
-        <div class="stat-foot">${foot}${trend}</div>
-        ${s.key === 'concentration' && journal && !ui.day0 ? `<div class="stat-judge">[SYSTÈME] Journée jugée ${journal.score > 0 ? '+' : ''}${String(journal.score).replace('.', ',')} · ${esc(journal.verdict)}</div>` : ''}
-      </div>`;
-  }).join('');
+    const foot = ui.day0 ? 'Jour 0' : inactive === null ? 'Pas encore entraînée' : inactive > RULES.decayGraceDays ? `<span class="decay-warn">⚠ ${inactive} j sans · en baisse</span>` : inactive === 0 ? "Entraînée aujourd'hui" : `Il y a ${inactive} j`;
+    return statRing(s, v, ui.day0 || !started ? null : diff, { deltaLabel: 'depuis J0', foot });
+  }).join('')}</div>`;
 
   const daysSinceExport = state.lastExportAt ? daysBetween(dateKey(new Date(state.lastExportAt)), today) : null;
   const needReminder = state.logs.length >= 5 && (daysSinceExport === null || daysSinceExport >= 7);
@@ -549,21 +650,23 @@ function renderHome() {
     ${ui.day0 ? `<div class="day0-banner">[SYSTÈME] ARCHIVE DU JOUR 0 · ${esc(fmtDayLong(st.start))} <button type="button" data-action="day0">Revenir</button></div>` : ''}
     ${renderBodyPanel(today)}
 
-    <section class="panel">
+    <section class="panel player-card pc-${rank.letter}">
+      <div class="aura" aria-hidden="true"><i></i></div>
       <div class="profile">
-        <div class="rank-badge rank-${rank.letter}">${rank.letter}</div>
+        <div class="rank-badge rank-${rank.letter} ${anim.prev && anim.prev.rank !== rank.letter ? 'flash rank-change' : ''}">${rank.letter}</div>
         <div class="profile-info">
           <div class="player-name">${esc(state.playerName)}</div>
           <div class="player-meta">${rank.title}</div>
-          <div class="level-line"><span class="level-label">NIVEAU</span><span class="level-num">${lv.level}</span></div>
+          <div class="level-line"><span class="level-label">NIVEAU</span><span class="level-num" data-count-to="${lv.level}" data-count-from="${cf('level', lv.level)}" data-fmt="lvl">${lv.level}</span></div>
         </div>
       </div>
       <div class="rank-chips" role="group" aria-label="Voir mon corps à chaque rang">
-        <span class="rank-chips-lab">Voir mon corps :</span>
+        <span class="rank-chips-lab">Mon corps :</span>
         ${['E', 'D', 'C', 'B', 'A', 'S'].map(r => `<button type="button" class="rchip r-${r} ${ui.holoRank === r ? 'on' : ''} ${rank.letter === r ? 'mine' : ''}" data-rank-preview="${r}">${r}</button>`).join('')}
       </div>
-      <div class="bar xp"><span style="width:${pct}%"></span></div>
-      <div class="bar-caption"><span>XP ${fmtNum(lv.into)} / ${fmtNum(lv.need)}</span><span>Total ${fmtNum(xp)}</span></div>
+      <div class="bar xp energy"><i class="xp-flow" aria-hidden="true"></i><span style="width:${pct}%" ${anim.prev ? `data-w-from="${anim.prev.level < lv.level ? 0 : anim.prev.level > lv.level ? 100 : anim.prev.pct}"` : ''}></span></div>
+      <div class="bar-caption"><span>XP <b data-count-to="${lv.into}" data-count-from="${anim.prev && anim.prev.level === lv.level ? anim.prev.into : lv.into}">${fmtNum(lv.into)}</b> / ${fmtNum(lv.need)}</span><span>Total <b data-count-to="${xp}" data-count-from="${cf('total', xp)}">${fmtNum(xp)}</b></span></div>
+      <div class="xp-split">Quêtes ${fmtNum(state.logs.reduce((t, l) => t + l.xp, 0))} · Nutrition ${fmtNum(nutritionDays(today).size * NUTRI_XP)} · Corps ${bodyXp() >= 0 ? '+' : ''}${fmtNum(bodyXp())} XP</div>
     </section>
 
     ${renderNutritionCard(today)}
@@ -589,8 +692,9 @@ function renderHome() {
     </section>` : ''}
 
     <section class="panel">
-      <div class="panel-head"><div class="panel-title">Statistiques</div><button class="btn small ghost" data-go="stats">📈 Graphique ›</button></div>
+      <div class="panel-head"><div class="panel-title">Statistiques</div><button class="btn small ghost" data-go="stats">📈 Détails ›</button></div>
       ${statsHtml}
+      <button type="button" class="btn block" style="margin-top:12px" data-goto-bilan="1">⚖️ ${state.bilans.some(x => x.date === today) ? 'Voir mon bilan du jour' : 'Saisir ma journée'}</button>
     </section>
 
     ${renderProgression(prog, started, st)}
@@ -655,14 +759,16 @@ function renderStatsTab() {
         ${card('Charisme', `Rang ${rank.letter}`, `niveau ${lv.level}`)}
         ${card('Corps', `${fmtKg(b.cur)} kg`, `${fmtPct(comp.fat)} % graisse · ${Math.round(b.progress * 100)} % de l'objectif`)}
       </div>
-      <div class="sit-stats">${STATS.map(s => `<div><span>${s.icon} ${s.name}</span><b>${fmtStat(st.values[s.key])}</b><i class="${st.values[s.key] - st.base[s.key] >= 0 ? 'trend-up' : 'trend-down'}">${sign(st.values[s.key] - st.base[s.key])}</i><em>${gradeFor(st.values[s.key])}</em></div>`).join('')}</div>
+      <div class="sring-grid" style="margin-top:14px">${STATS.map(s => statRing(s, st.values[s.key], st.values[s.key] - st.base[s.key], { deltaLabel: 'depuis J0' })).join('')}</div>
     </section>
 
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Graphique</div><button type="button" class="btn small" data-landscape="1">⟲ Paysage</button></div>
       ${renderChart(st, today, { maxJ: 45, maxM: 12 })}
       <p class="small faint" style="margin-bottom:0">Tourne ton téléphone ou touche « Paysage » pour voir le graphique en grand.</p>
-    </section>`;
+    </section>
+
+    ${renderBilanPanel(today)}`;
 }
 
 /* Vue paysage plein écran (fonctionne même si la rotation de l'écran est bloquée) */
@@ -759,6 +865,7 @@ function renderChart(st, today, opt = {}) {
       ${i % every === 0 ? `<text x="${x}" y="${H - 6}" class="cx">${lab(c)}</text>` : ''}
     </g>`;
   }).join('');
+  const linePath = cs.map((c, i) => `${i ? 'L' : 'M'}${(PL + step * i + step / 2).toFixed(1)},${Y(c.c).toFixed(1)}`).join(' ');
   const last = cs[n - 1], prev = cs[n - 2];
   const ch = last.c - last.o, chPrev = prev.c - prev.o;
   const pctCh = last.o ? (ch / Math.abs(last.o)) * 100 : 0;
@@ -772,9 +879,16 @@ function renderChart(st, today, opt = {}) {
       <b>${fmtV(last.c)}</b> <span>${ch >= 0 ? '▲ +' : '▼ '}${fmtV(Math.abs(ch)) === '0,0' && key !== 'xp' ? ch.toFixed(2).replace('.', ',') : (ch >= 0 ? '' : '−') + fmtV(Math.abs(ch))} (${pctCh >= 0 ? '+' : ''}${pctCh.toFixed(1).replace('.', ',')} %) ${per}</span>
     </div>
     <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Graphique">
+      <defs>
+        <linearGradient id="clg-${key}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#9a7bff"/><stop offset="1" stop-color="#38e0ff"/></linearGradient>
+        <linearGradient id="cla-${key}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#7a6bff" stop-opacity=".35"/><stop offset="1" stop-color="#38c8ff" stop-opacity="0"/></linearGradient>
+      </defs>
       ${grid}
       <line x1="${PL}" x2="${W - PR}" y1="${Y(last.c).toFixed(1)}" y2="${Y(last.c).toFixed(1)}" class="clast"/>
       ${body}
+      <path class="carea" d="${linePath} L${(PL + step * (n - 1) + step / 2).toFixed(1)},${H - PB} L${(PL + step / 2).toFixed(1)},${H - PB} Z" fill="url(#cla-${key})"/>
+      <path class="cline" d="${linePath}" pathLength="1" stroke="url(#clg-${key})"/>
+      ${cs.map((c, i) => `<circle class="cdot ${i === n - 1 ? 'last' : ''}" cx="${(PL + step * i + step / 2).toFixed(1)}" cy="${Y(c.c).toFixed(1)}" r="${i === n - 1 ? 4 : n > 40 ? 1.6 : 2.6}" style="animation-delay:${(0.2 + (i / n) * 1.3).toFixed(2)}s"/>`).join('')}
     </svg>
     <div class="small ${better ? 'trend-up' : 'muted'}" style="margin-top:6px">${better ? `🔥 Tu te surpasses : mieux que ${perPrev}.` : `Moins bien que ${perPrev}. Le Système attend mieux.`}</div>`;
 }
@@ -831,6 +945,7 @@ function composition(kg) {
   return { fat, muscle, src };
 }
 const fmtPct = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
+const bmiLabel = b => (b < 18.5 ? 'maigre' : b < 25 ? 'normal' : b < 30 ? 'surpoids' : 'obésité');
 
 /* Aperçu du corps par rang de Charisme, calculé selon TON objectif :
    E = départ, D/C/B = étapes, A = objectif atteint, S = au-delà (plus sec, plus musclé). */
@@ -881,8 +996,8 @@ function renderBodyPanel(today) {
         <div id="holo" class="holo"><div class="holo-loading">Initialisation du scan…</div></div>
         <span class="hc tl"></span><span class="hc tr"></span><span class="hc bl"></span><span class="hc br"></span>
         <div class="hud hud-left">
-          <div><small>${v.kind === 'rank' ? 'POIDS VISÉ' : 'POIDS'}</small><b>${fmtKg(v.kg)}</b><i>kg</i></div>
-          <div><small>DÉPART</small><b>${fmtKg(b.start)}</b><i>kg</i></div>
+          <div><small>${v.kind === 'rank' ? 'POIDS VISÉ' : 'POIDS'}</small><b data-count-to="${v.kg}" data-count-from="${v.kind === 'now' ? cf('kg', v.kg) : v.kg}" data-fmt="kg">${fmtKg(v.kg)}</b><i>kg</i></div>
+          <div><small>IMC</small><b>${fmtG(Math.round((v.kg / Math.pow(state.body.heightCm / 100, 2)) * 10) / 10)}</b><i>${bmiLabel(v.kg / Math.pow(state.body.heightCm / 100, 2))}</i></div>
           <div><small>GRAISSE${comp.src === 'balance' && !preview ? '' : ' ≈'}</small><b class="fat">${fmtPct(comp.fat)}</b><i>%</i></div>
         </div>
         <div class="hud hud-right">
@@ -900,8 +1015,8 @@ function renderBodyPanel(today) {
       </div>
 
       <div class="load ${done ? 'done' : ''}">
-        <div class="load-top"><span>${done ? 'TRANSFORMATION TERMINÉE' : 'TRANSFORMATION EN COURS'}</span><b>${String(pct).replace('.', ',')} %</b></div>
-        <div class="load-bar"><span style="width:${Math.max(pct, 1.5)}%"></span></div>
+        <div class="load-top"><span>${done ? 'TRANSFORMATION TERMINÉE' : 'TRANSFORMATION EN COURS'}</span><b><span data-count-to="${pct}" data-count-from="${cf('progress', pct)}" data-fmt="pct">${String(pct).replace('.', ',')}</span> %</b></div>
+        <div class="load-bar"><span style="width:${Math.max(pct, 1.5)}%" ${anim.prev ? `data-w-from="${Math.max(anim.prev.progress, 1.5)}"` : ''}></span></div>
         <div class="load-scale"><span>${fmtKg(b.start)} kg</span><span>${fmtKg(b.cur)} kg</span><span>${fmtKg(b.goal)} kg</span></div>
       </div>
 
@@ -986,6 +1101,8 @@ function openWeighSheet() {
 const MILESTONES = [0.25, 0.5, 0.75, 1];
 function addWeight(kg, fat = null, muscle = null) {
   const before = bodyProgress();
+  const lvBefore = levelInfo(totalXp());
+  snapshotForAnim();
   const date = todayKey();
   state.weights.filter(w => w.date === date).forEach(w => tomb(w.id)); // une pesée par jour
   state.weights = state.weights.filter(w => w.date !== date);
@@ -996,7 +1113,16 @@ function addWeight(kg, fat = null, muscle = null) {
   render();
   const prev = state.weights.length >= 2 ? state.weights[state.weights.length - 2].kg : before.start;
   const d = kg - prev;
-  toast('Pesée enregistrée', `${fmtKg(kg)} kg · ${Math.abs(d) < 0.05 ? 'stable' : (d < 0 ? '−' : '+') + fmtKg(Math.abs(d)) + ' kg'} · transformation ${Math.round(after.progress * 100)} %`);
+  const lvAfter = levelInfo(totalXp());
+  const dxp = Math.round(-d * BODY_XP_PER_KG);
+  toast('Pesée enregistrée', `${fmtKg(kg)} kg · ${Math.abs(d) < 0.05 ? 'stable' : (d < 0 ? '−' : '+') + fmtKg(Math.abs(d)) + ' kg'} · ${dxp >= 0 ? '+' : ''}${fmtNum(dxp)} XP · transformation ${Math.round(after.progress * 100)} %`, d > 0.05 ? 'warn' : 'info');
+  if (d < -0.05) { sfx('success'); haptic(); } else if (d > 0.05) { sfx('fail'); haptic(2); }
+  if (lvAfter.level > lvBefore.level) {
+    const rb = rankFor(lvBefore.level), ra = rankFor(lvAfter.level);
+    setTimeout(() => showLevelUp(lvAfter.level, ra.letter !== rb.letter ? ra : null), 1100);
+  } else if (lvAfter.level < lvBefore.level) {
+    setTimeout(() => { toast('Niveau perdu', `Niveau ${lvBefore.level} → ${lvAfter.level} : le poids est remonté.`, 'warn'); sfx('penalty'); haptic(2); }, 1000);
+  }
   const crossed = MILESTONES.filter(m => before.progress < m && after.progress >= m).pop();
   if (crossed) {
     setTimeout(() => openSheet({
@@ -1476,21 +1602,35 @@ function nutriStatus(date, t, tg) {
   return { k: 'run', icon: '⚡', title: 'JOURNÉE EN COURS', msg: `Encore ${fmtNum(tg.kcal - t.kcal)} kcal à placer intelligemment.` };
 }
 
+/* Barre du bas : UNIQUEMENT calories consommées / objectif, avec remplissage animé */
+function kcalBar(t, tg) {
+  const pct = Math.min(100, (t.kcal / tg.kcal) * 100);
+  const over = t.kcal > tg.kcal + 100;
+  return `
+    <div class="kbar ${over ? 'over' : t.kcal >= tg.kcal - 300 ? 'ok' : ''}">
+      <div class="kbar-top"><b data-count-to="${Math.round(t.kcal)}" data-count-from="0" data-dur="1100">${fmtNum(t.kcal)}</b><span> / ${fmtNum(tg.kcal)} kcal</span></div>
+      <div class="kbar-track"><span style="width:${pct}%" data-w-from="0"></span><i></i></div>
+    </div>`;
+}
+function mealRowsHtml(date) {
+  return MEALS.map((m, i) => {
+    const items = state.meals.filter(x => x.date === date && x.meal === m.key);
+    const kc = items.reduce((s, x) => s + x.kcal, 0);
+    return `<div class="nmeal casc ${items.length ? 'done' : ''}" style="--j:${i}"><span>${m.icon} ${m.label}</span><b>${items.length ? fmtNum(kc) + ' kcal' : '—'}</b></div>`;
+  }).join('');
+}
+
 function renderNutritionCard(today) {
   const t = dayTotals(today), tg = nutritionTargets();
-  const left = tg.kcal - t.kcal;
   const ns = nutriStatus(today, t, tg);
   return `
     <section class="panel nut nut-${ns.k}">
       <div class="nut-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="panel-head"><div class="panel-title">Nutrition du jour</div><button class="btn small ghost" data-go="meals">Ouvrir ›</button></div>
+      <div class="nutri-macros top">${macroBars(t, tg)}</div>
       <div class="nut-status"><span class="nut-ico">${ns.icon}</span><div><b>${ns.title}</b><span>${esc(ns.msg)}</span></div></div>
-      <div class="nutri-top">
-        <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'restantes' : 'en trop'}</span></div></div>
-        <div class="nutri-macros">${macroBars(t, tg)}</div>
-      </div>
-      <div class="small faint" style="margin-top:8px">${fmtNum(t.kcal)} / ${fmtNum(tg.kcal)} kcal${tg.known ? '' : ' · objectif provisoire : renseigne ta taille et ton âge dans Réglages'}</div>
-      <button class="btn block" style="margin-top:12px" data-go="meals">🍽️ Ajouter ce que j'ai mangé</button>
+      <div class="nmeals">${mealRowsHtml(today)}</div>
+      ${kcalBar(t, tg)}
     </section>`;
 }
 
@@ -1512,12 +1652,9 @@ function renderMeals() {
           <div class="small muted">${validated ? '<span style="color:var(--good)">✓ Quête nutrition validée (+' + NUTRI_XP + ' XP)</span>' : day === today ? 'Quête : 3 repas, ≤ objectif, protéines ≥ 80 %' : 'Quête nutrition non validée'}</div></div>
         <button class="icon-btn" data-meal-day="1" aria-label="Jour suivant" ${day >= today ? 'disabled style="opacity:.3"' : ''}>›</button>
       </div>
+      <div class="nutri-macros top">${macroBars(t, tg)}</div>
       <div class="nut-status"><span class="nut-ico">${ns.icon}</span><div><b>${ns.title}</b><span>${esc(ns.msg)}</span></div></div>
-      <div class="nutri-top">
-        <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'kcal restantes' : 'kcal en trop'}</span></div></div>
-        <div class="nutri-macros">${macroBars(t, tg)}</div>
-      </div>
-      <div class="small faint" style="margin-top:8px">${fmtNum(t.kcal)} kcal mangées · objectif ${fmtNum(tg.kcal)} kcal${tg.auto ? ' (calculé pour perdre ≈ 0,5 kg/semaine)' : ''}</div>
+      ${kcalBar(t, tg)}
     </section>
 
     ${MEALS.map(m => {
@@ -1528,8 +1665,8 @@ function renderMeals() {
       <section class="panel">
         <div class="panel-head"><div class="panel-title">${m.icon} ${m.label}</div><div class="entry-xp" style="color:var(--neon-2)">${fmtNum(kc)} kcal</div></div>
         ${ph.length ? `<div class="meal-photos">${ph.map(p => `<button type="button" class="ph" data-photo="${esc(p.id)}"><img src="${photoUrl(p)}" alt=""></button>`).join('')}</div>` : ''}
-        ${items.map(x => `
-          <div class="entry">
+        ${items.map((x, xi) => `
+          <div class="entry casc" style="--j:${xi}">
             <div class="entry-body">
               <div class="entry-title">${esc(x.name)}</div>
               <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' ? ' · 🏷️' : ''}</div>
@@ -1813,6 +1950,157 @@ function progressionInfo(today, st) {
 }
 
 /* =========================================================
+   BILAN DU JOUR : ce que j'ai accompli / ce qui m'a fait perdre du temps
+   Calcul honnête : 30 min utiles = 1 point pour les stats concernées ;
+   1 h perdue = −2,5 points (ça pèse plus lourd). Sans durée : 1 h par élément.
+   Ce qui est déjà enregistré en quête n'est pas compté deux fois.
+   ========================================================= */
+const BIL_GOOD = [
+  { re: / (sport|muscu|salle|course|couru|footing|jogging|run |velo|natation|boxe|foot|basket|pompes|abdos|entrain|cardio|marche|seance)/, label: 'Sport', w: { physique: 1, discipline: 0.5 }, act: /sport/ },
+  { re: / (live|stream)/, label: 'Live', w: { concentration: 0.8, discipline: 0.6 }, act: /live/ },
+  { re: / (clip|montage|monte|edit|miniature|tournage|filme)/, label: 'Clips / montage', w: { intelligence: 0.8, concentration: 0.6 }, act: /clip|montage/ },
+  { re: / (lecture|lu |livre|appris|apprentissage|cours|revis|etudi|formation|tuto|anglais|langue|podcast)/, label: 'Apprentissage', w: { intelligence: 1, concentration: 0.5 }, act: /lecture|apprentissage/ },
+  { re: / (travail|bosse|boulot|taf|chantier|job|shift)/, label: 'Travail', w: { discipline: 0.8, physique: 0.4 }, act: /travail/ },
+  { re: / (code|programm|projet|business|entreprise|ecrit|script)/, label: 'Projet', w: { intelligence: 0.8, discipline: 0.6, concentration: 0.4 } },
+  { re: / (medit|respiration|yoga)/, label: 'Méditation', w: { concentration: 1, discipline: 0.3 } },
+  { re: / (dormi|sommeil|couche tot)/, label: 'Sommeil', w: { physique: 0.5, concentration: 0.3 } },
+  { re: / (cuisine|meal prep|prepare mes repas)/, label: 'Cuisine', w: { discipline: 0.5, physique: 0.2 } },
+  { re: / (menage|range|rangement)/, label: 'Rangement', w: { discipline: 0.5 } },
+];
+const BIL_BAD = [
+  { re: / (tiktok|insta|instagram|snap|reseaux|scroll|facebook|twitter|reels|shorts)/, label: 'Réseaux / scroll', w: { concentration: 1, discipline: 0.7 } },
+  { re: / (youtube|netflix|serie|film|anime|twitch)/, label: 'Vidéos / séries', w: { concentration: 0.8, discipline: 0.5 } },
+  { re: / (jeu|jeux|ps5|playstation|console|fortnite|fifa|valorant|lol |gaming|warzone|cod )/, label: 'Jeux vidéo', w: { discipline: 0.8, concentration: 0.6 } },
+  { re: / (procrastin|glande|rien fait|traine|perdu|flemme|sieste)/, label: 'Procrastination', w: { discipline: 1, concentration: 0.4 } },
+  { re: / (fast ?food|mcdo|kfc|burger|kebab|tacos|pizza|bonbon|soda|malbouffe|grignot)/, label: 'Malbouffe', w: { physique: 1, discipline: 0.4 } },
+  { re: / (couche tard|nuit blanche|pas dormi|mal dormi|insomnie)/, label: 'Sommeil raté', w: { physique: 0.8, concentration: 0.8 } },
+  { re: / (alcool|soiree|biere|vodka|chicha|bu )/, label: 'Soirée / alcool', w: { physique: 1, discipline: 0.6, concentration: 0.4 } },
+];
+const BAD_WEIGHT = 1.25;
+function splitItems(text) {
+  return (text || '').split(/\n|,|;|\+|\bet\b|\bpuis\b|\bensuite\b|\bapres\b|\baprès\b/i).map(x => x.trim()).filter(x => x.length > 1);
+}
+function analyzeBilan(b, date) {
+  const pts = Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
+  const items = [];
+  // minutes déjà enregistrées en quêtes ce jour-là (pour ne pas compter deux fois)
+  const questMin = {};
+  for (const l of state.logs) if (l.date === date) questMin[normJ(l.name + ' ' + l.activityId)] = (questMin[normJ(l.name + ' ' + l.activityId)] || 0) + (l.minutes || 30);
+  const used = {};
+  const take = (cat, h) => {
+    if (!cat.act) return h;
+    let q = 0;
+    for (const [name, m] of Object.entries(questMin)) if (cat.act.test(name)) q += m;
+    const left = Math.max(0, q / 60 - (used[cat.label] || 0));
+    const dup = Math.min(h, left);
+    used[cat.label] = (used[cat.label] || 0) + dup;
+    return h - dup;
+  };
+  for (const [list, sign, cats] of [[splitItems(b.good), 1, BIL_GOOD], [splitItems(b.bad), -1, BIL_BAD]]) {
+    for (const text of list) {
+      const t = normJ(text);
+      const cat = cats.find(c => c.re.test(t)) || (sign > 0 ? { label: 'Autre effort', w: { discipline: 0.3 } } : { label: 'Temps perdu', w: { discipline: 0.6, concentration: 0.4 } });
+      const h0 = hoursIn(text);
+      const hours = h0 != null ? h0 : 1;
+      const eff = sign > 0 ? take(cat, hours) : hours;
+      const effect = {};
+      for (const [k, w] of Object.entries(cat.w)) {
+        const v = sign > 0 ? eff * 2 * w : -hours * 2 * BAD_WEIGHT * w;
+        pts[k] += v; effect[k] = v;
+      }
+      items.push({ text, label: cat.label, sign, hours, counted: eff, guessed: h0 == null, effect });
+    }
+  }
+  const net = Object.values(pts).reduce((a, v) => a + v, 0);
+  const goodH = items.filter(i => i.sign > 0).reduce((a, i) => a + i.hours, 0);
+  const badH = items.filter(i => i.sign < 0).reduce((a, i) => a + i.hours, 0);
+  return { pts, items, net, goodH, badH };
+}
+
+/* Anneau de stat : plus la stat est haute, plus il grossit, brille et change de couleur */
+const GRADE_COL = { E: '#8fb0c8', D: '#3fe0a0', C: '#2fc4ff', B: '#4f7dff', A: '#a77bff', S: '#ffc35a' };
+function statRing(s, v, delta, opts = {}) {
+  const g = gradeFor(v), col = GRADE_COL[g];
+  const size = Math.round(78 + v * 0.42);           // 82 px à 10, 120 px à 100
+  const r = 42, c = 2 * Math.PI * r, off = c * (1 - v / 100);
+  const glow = (2 + v / 8).toFixed(1);
+  const nParts = v >= 80 ? 10 : v >= 65 ? 7 : v >= 50 ? 5 : v >= 35 ? 3 : 0;
+  const parts = Array.from({ length: nParts }, (_, i) => `<i style="--a:${(i * 360) / nParts}deg;--t:${(3 + (i % 3)).toFixed(1)}s"></i>`).join('');
+  return `
+    <div class="sring g-${g}" style="--col:${col};--size:${size}px;--glow:${glow}px">
+      <div class="sring-wrap">
+        ${parts ? `<div class="sring-orbit">${parts}</div>` : ''}
+        <svg viewBox="0 0 100 100" class="sring-svg" aria-hidden="true">
+          <circle cx="50" cy="50" r="${r}" class="sr-bg"/>
+          <circle cx="50" cy="50" r="${r}" class="sr-fg" style="stroke-dasharray:${c.toFixed(1)};--c:${c.toFixed(1)};--off:${off.toFixed(1)}"/>
+        </svg>
+        <div class="sring-in"><b data-count-to="${v}" data-count-from="${opts.from != null ? opts.from : 0}" data-fmt="stat">${fmtStat(v)}</b><em>${g}</em></div>
+      </div>
+      <div class="sring-name">${s.icon} ${s.name}</div>
+      ${delta != null ? `<div class="sring-delta ${delta > 0.05 ? 'trend-up' : delta < -0.05 ? 'trend-down' : ''}">${delta > 0.05 ? '▲ +' : delta < -0.05 ? '▼ ' : '= '}${fmtStat(delta)}${opts.deltaLabel ? ' ' + opts.deltaLabel : ''}</div>` : ''}
+      ${opts.foot ? `<div class="sring-foot">${opts.foot}</div>` : ''}
+    </div>`;
+}
+
+function renderBilanPanel(today) {
+  const b = state.bilans.find(x => x.date === today) || { good: '', bad: '' };
+  const has = !!state.bilans.find(x => x.date === today);
+  let result = '';
+  if (has) {
+    const a = analyzeBilan(b, today);
+    const st = computeStats(state.logs, today);
+    const y = st.history.get(addDays(today, -1)) || st.base;
+    const deltas = STAT_KEYS.map(k => ({ k, d: st.values[k] - y[k] }));
+    const dPow = deltas.reduce((t, x) => t + x.d, 0) / STAT_KEYS.length;
+    const fmtH = h => (Math.round(h * 10) / 10).toString().replace('.', ',') + ' h';
+    result = `
+      <div class="bil-verdict ${dPow > 0.005 ? 'up' : dPow < -0.005 ? 'down' : ''}">
+        <b>${dPow > 0.005 ? '▲ TU AVANCES' : dPow < -0.005 ? '▼ TU RECULES' : '= SUR PLACE'}</b>
+        <span>${fmtH(a.goodH)} utiles · ${fmtH(a.badH)} perdues · bilan ${a.net >= 0 ? '+' : ''}${fmtG(Math.round(a.net * 10) / 10)} pts</span>
+      </div>
+      <div class="bil-deltas">${deltas.map((x, i) => `<div class="casc" style="--j:${i}"><span>${statByKey[x.k].icon} ${statByKey[x.k].name}</span><b class="${x.d > 0.005 ? 'trend-up' : x.d < -0.005 ? 'trend-down' : ''}">${x.d >= 0 ? '+' : ''}${x.d.toFixed(2).replace('.', ',')}</b></div>`).join('')}</div>
+      <div class="bil-items">${a.items.map((it, i) => `<div class="bil-item ${it.sign > 0 ? 'good' : 'bad'} casc" style="--j:${i + 4}">
+        <span>${it.sign > 0 ? '✅' : '⛔'} ${esc(it.label)} · ${fmtH(it.hours)}${it.guessed ? ' (estimé)' : ''}${it.sign > 0 && it.counted < it.hours ? ` · ${fmtH(it.hours - it.counted)} déjà en quête` : ''}</span>
+        <b>${Object.entries(it.effect).filter(([, v]) => Math.abs(v) > 0.01).map(([k, v]) => `${statByKey[k].icon}${v > 0 ? '+' : ''}${fmtG(Math.round(v * 10) / 10)}`).join(' ')}</b></div>`).join('')}</div>
+      <p class="small faint" style="margin-bottom:0">Chiffres = points d'effort du jour (30 min utiles = 1 point ; 1 h perdue = −2,5). Les variations de stats suivent des rendements décroissants : monter est lent, reculer est rapide.</p>`;
+  }
+  return `
+    <section class="panel bilan" id="bilan">
+      <div class="panel-head"><div class="panel-title">Bilan du jour</div><div class="panel-sub date-glow">${esc(fmtDayShort(today))}</div></div>
+      <label class="field"><span>✅ Ce que j'ai accompli aujourd'hui</span>
+        <textarea class="input" id="bil-good" rows="3" placeholder="Ex : 1 h de sport, 2 h de live, 1 h 30 de clips, 30 min de lecture">${esc(b.good)}</textarea></label>
+      <label class="field"><span>⛔ Ce qui m'a fait perdre du temps</span>
+        <textarea class="input" id="bil-bad" rows="3" placeholder="Ex : 2 h de TikTok, 1 h de jeux vidéo, couché tard">${esc(b.bad)}</textarea></label>
+      <button type="button" class="btn primary block" data-bilan="save">⚖️ ${has ? 'Recalculer mon bilan' : 'Calculer mon bilan'}</button>
+      ${result}
+    </section>`;
+}
+
+function saveBilan() {
+  const today = todayKey();
+  const good = ($('#bil-good') || {}).value || '', bad = ($('#bil-bad') || {}).value || '';
+  if (!good.trim() && !bad.trim()) { toast('Rien à calculer', 'Écris au moins une ligne.', 'warn'); return; }
+  const st0 = computeStats(state.logs, today);
+  const p0 = powerOf(st0.values);
+  state.bilans.filter(x => x.date === today).forEach(x => tomb(x.id));
+  state.bilans = state.bilans.filter(x => x.date !== today);
+  state.bilans.push({ id: uid(), date: today, ts: Date.now(), good: good.slice(0, 1500), bad: bad.slice(0, 1500) });
+  save();
+  const st1 = computeStats(state.logs, today);
+  const dp = powerOf(st1.values) - p0;
+  const a = analyzeBilan(state.bilans[state.bilans.length - 1], today);
+  render();
+  const el = $('#bilan'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const y = st1.history.get(addDays(today, -1)) || st1.base;
+  const chips = STAT_KEYS.map(k => ({ k, d: st1.values[k] - y[k] })).filter(x => Math.abs(x.d) > 0.005).map(x => `${statByKey[x.k].name} ${x.d > 0 ? '+' : ''}${x.d.toFixed(2).replace('.', ',')}`);
+  const up = a.net >= 0;
+  if (up) { sfx('success'); haptic(); } else { sfx('fail'); haptic(2); }
+  celebrate({ kind: up ? 'win' : 'fail', title: up ? 'BILAN POSITIF' : 'BILAN NÉGATIF', big: `${a.net >= 0 ? '+' : ''}${fmtG(Math.round(a.net * 10) / 10)} pts`,
+    sub: up ? 'Tu avances. Garde ce rythme.' : 'Plus de temps perdu que de temps utile : tes stats reculent.', chips,
+    lines: [`Puissance ${dp >= 0 ? '+' : ''}${dp.toFixed(2).replace('.', ',')} par rapport à avant ce bilan`] });
+}
+
+/* =========================================================
    Onglet 2 : Aujourd'hui
    ========================================================= */
 function entryHtml(l, withDelete = true) {
@@ -1978,17 +2266,30 @@ function addLog(activity, minutes, note, date) {
   });
 }
 
+/* LEVEL UP plein écran : flash, particules, texte qui explose, vibration */
 function showLevelUp(level, newRank) {
-  openSheet({
-    center: true,
-    tag: '[SYSTÈME] Alerte',
-    body: `
-      <div class="levelup">
-        <div class="levelup-txt">NIVEAU SUPÉRIEUR</div>
-        <div class="levelup-big">${level}</div>
-        <p>Tu as atteint le niveau ${level}.${newRank ? `<br><b style="color:#fff">Nouveau rang : ${newRank.letter}</b> — ${newRank.title}.` : ''}</p>
-      </div>`,
-    buttons: [{ label: 'Continuer', value: true, cls: 'primary' }],
+  sfx('levelup'); haptic(3);
+  const letters = 'LEVEL UP'.split('').map((c, i) => `<span style="--x:${Math.round(Math.random() * 300 - 150)}px;--y:${Math.round(Math.random() * 300 - 150)}px;--r:${Math.round(Math.random() * 120 - 60)}deg;--d:${i * 45}ms">${c === ' ' ? '&nbsp;' : c}</span>`).join('');
+  const parts = Array.from({ length: 48 }, (_, i) => `<i style="--a:${(i * 360) / 48 + Math.random() * 6}deg;--r:${140 + Math.random() * 220}px;--s:${(2 + Math.random() * 4).toFixed(1)}px;--d:${Math.round(Math.random() * 180)}ms"></i>`).join('');
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = 'lvlup';
+    ov.innerHTML = `
+      <div class="lv-flash"></div><div class="lv-ring"></div><div class="lv-ring r2"></div>
+      <div class="lv-parts">${parts}</div>
+      <div class="lv-box">
+        <div class="lv-tag">[SYSTÈME]</div>
+        <div class="lv-title">${letters}</div>
+        <div class="lv-num"><small>NIVEAU</small><b data-count-to="${level}" data-count-from="${level - 1}" data-fmt="lvl" data-dur="1200">${level - 1}</b></div>
+        ${newRank ? `<div class="lv-rank">NOUVEAU RANG · <b>${newRank.letter}</b><span>${esc(newRank.title)}</span></div>` : '<div class="lv-sub">Tes efforts réels paient. Continue.</div>'}
+        <div class="cel-hint">Touche pour continuer</div>
+      </div>`;
+    document.body.appendChild(ov);
+    setTimeout(() => runCountUps(ov), 650);
+    let done = false;
+    const close = () => { if (done) return; done = true; ov.classList.add('out'); setTimeout(() => { ov.remove(); resolve(); }, 350); };
+    setTimeout(() => ov.addEventListener('click', close), 600);
+    setTimeout(close, 4200);
   });
 }
 
@@ -2528,6 +2829,8 @@ document.addEventListener('click', e => {
   if (t.closest('[data-landscape]')) return openLandscape();
   if (t.closest('[data-landscape-close]')) return closeLandscape();
 
+  if (t.closest('#view [data-bilan="save"]')) return saveBilan();
+  if (t.closest('#view [data-goto-bilan]')) { go('stats'); setTimeout(() => { const el = $('#bilan'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350); return; }
   const sy = t.closest('#view [data-sync]');
   if (sy) {
     const k = sy.dataset.sync;
@@ -2639,7 +2942,7 @@ function mergeStates(a, b, preferB = false) {
     const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
     const out = JSON.parse(JSON.stringify(newer));
     // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
-    for (const k of ['logs', 'meals', 'weights', 'journals']) {
+    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans']) {
       const ids = new Set(out[k].map(x => x.id));
       out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
     }
@@ -2668,6 +2971,7 @@ function mergeStates(a, b, preferB = false) {
     playerName: settingsFrom.playerName,
     startDate: settingsFrom.startDate,
     body: { ...settingsFrom.body },
+    questCfg: { ...(settingsFrom.questCfg || a.questCfg) },
     settingsAt: Math.max(a.settingsAt || 0, b.settingsAt || 0),
     replacedAt: a.replacedAt || 0,
     createdAt: [a.createdAt, b.createdAt].filter(Boolean).sort()[0] || a.createdAt,
@@ -2679,6 +2983,7 @@ function mergeStates(a, b, preferB = false) {
     meals: union(a.meals, b.meals),
     weights: oneByDate(union(a.weights, b.weights)).sort((x, y) => x.date.localeCompare(y.date)),
     journals: oneByDate(union(a.journals, b.journals)),
+    bilans: oneByDate(union(a.bilans || [], b.bilans || [])),
   };
 }
 
@@ -2826,7 +3131,26 @@ function setupServiceWorker() {
 /* =========================================================
    Démarrage
    ========================================================= */
+function buildParticles() {
+  const bg = $('#fx-bg');
+  if (!bg || bg.childElementCount) return;
+  const n = window.innerWidth < 500 ? 26 : 40;
+  let html = '';
+  for (let i = 0; i < n; i++) {
+    const size = (1.5 + Math.random() * 3).toFixed(1);
+    const violet = Math.random() < 0.35;
+    html += `<i style="left:${(Math.random() * 100).toFixed(1)}%;width:${size}px;height:${size}px;--d:${(16 + Math.random() * 22).toFixed(1)}s;--delay:-${(Math.random() * 30).toFixed(1)}s;--x:${(Math.random() * 60 - 30).toFixed(0)}px;--c:${violet ? '#a78bff' : '#5fd4ff'}"></i>`;
+  }
+  bg.innerHTML = html;
+}
+function scanSweep() {
+  const sc = $('#fx-scan');
+  if (!sc) return;
+  sc.classList.remove('go'); void sc.offsetWidth; sc.classList.add('go');
+}
+
 async function start() {
+  buildParticles();
   $('#app-version').textContent = APP_VERSION;
   if (!localStorage.getItem(STORAGE_KEY)) save();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
