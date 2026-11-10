@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -112,6 +112,8 @@ function freshState() {
     lastExportAt: null,
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
     logs: [],
+    body: { startWeight: 96.5, goalWeight: 86 },
+    weights: [],
   };
 }
 
@@ -147,6 +149,15 @@ function sanitizeState(raw) {
       difficulty: DIFFICULTIES.some(d => d.key === l.difficulty) ? l.difficulty : 'normal',
       xp: Number.isFinite(l.xp) && l.xp >= 0 ? Math.round(l.xp) : 0,
     }));
+  const okKg = v => Number.isFinite(v) && v >= 30 && v <= 300;
+  if (raw.body && typeof raw.body === 'object') {
+    if (okKg(raw.body.startWeight)) s.body.startWeight = raw.body.startWeight;
+    if (okKg(raw.body.goalWeight)) s.body.goalWeight = raw.body.goalWeight;
+  }
+  s.weights = (Array.isArray(raw.weights) ? raw.weights : [])
+    .filter(w => w && isValidKey(w.date) && okKg(w.kg))
+    .map(w => ({ id: typeof w.id === 'string' && w.id ? w.id : uid(), date: w.date, kg: Math.round(w.kg * 10) / 10 }))
+    .sort((a, b) => a.date.localeCompare(b.date));
   return s;
 }
 
@@ -327,7 +338,7 @@ const confirmBox = (title, text, okLabel = 'Confirmer', danger = false) =>
    ========================================================= */
 const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', history: 'Journal des quêtes', settings: 'Réglages' };
 let currentTab = 'home';
-const ui = { calMonth: null, selectedDay: null };
+const ui = { calMonth: null, selectedDay: null, holoMode: 'now', photoPose: 'face' };
 
 function go(tab) {
   currentTab = tab;
@@ -342,6 +353,16 @@ function render() {
   const fn = { home: renderHome, today: renderToday, history: renderHistory, settings: renderSettings }[currentTab];
   view.innerHTML = fn();
   view.style.animation = 'none'; void view.offsetWidth; view.style.animation = '';
+  if (currentTab === 'home') mountHolo();
+}
+
+/* Affiche l'hologramme 3D dans l'Accueil (le module 3D se charge à part) */
+function mountHolo() {
+  const el = $('#holo');
+  if (!el) return;
+  const go3d = () => window.Holo && window.Holo.mount(el, { progress: bodyProgress().progress, mode: ui.holoMode });
+  if (window.Holo) go3d();
+  else document.addEventListener('holo-ready', go3d, { once: true });
 }
 
 /* =========================================================
@@ -385,6 +406,8 @@ function renderHome() {
   const needReminder = state.logs.length >= 5 && (daysSinceExport === null || daysSinceExport >= 7);
 
   return `
+    ${renderBodyPanel(today)}
+
     <section class="panel">
       <div class="profile">
         <div class="rank-badge rank-${rank.letter}">${rank.letter}</div>
@@ -437,6 +460,332 @@ function renderHome() {
     <button class="btn primary block" data-go="today">⚔ Enregistrer une quête</button>
   `;
 }
+
+/* =========================================================
+   CORPS : hologramme, poids, transformation, photos
+   ========================================================= */
+const fmtKg = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
+const POSES = [
+  { key: 'face', label: 'Face' },
+  { key: 'profil', label: 'Profil' },
+  { key: 'dos', label: 'Dos' },
+];
+const poseLabel = k => (POSES.find(p => p.key === k) || POSES[0]).label;
+
+function currentWeight() {
+  return state.weights.length ? state.weights[state.weights.length - 1].kg : state.body.startWeight;
+}
+function bodyProgress() {
+  const start = state.body.startWeight, goal = state.body.goalWeight, cur = currentWeight();
+  const span = goal - start;
+  const progress = span === 0 ? 1 : Math.max(0, Math.min(1, (cur - start) / span));
+  return { start, goal, cur, progress, lost: start - cur, left: Math.max(0, Math.abs(cur - goal)) };
+}
+
+function renderBodyPanel(today) {
+  const b = bodyProgress();
+  const pct = Math.round(b.progress * 1000) / 10;
+  const monthKey = today.slice(0, 7);
+  const photoThisMonth = photos.some(p => p.date.slice(0, 7) === monthKey);
+  const lastW = state.weights[state.weights.length - 1];
+  const sinceW = lastW ? daysBetween(lastW.date, today) : null;
+  const goalMode = ui.holoMode === 'goal';
+  const done = b.progress >= 1;
+  return `
+    <section class="panel lab">
+      <div class="lab-head">
+        <span class="lab-tag">[SYSTÈME] SCAN CORPOREL</span>
+        <span class="lab-live"><i></i>EN DIRECT</span>
+      </div>
+      <div class="holo-wrap ${goalMode ? 'goal' : ''}">
+        <div id="holo" class="holo"><div class="holo-loading">Initialisation du scan…</div></div>
+        <span class="hc tl"></span><span class="hc tr"></span><span class="hc bl"></span><span class="hc br"></span>
+        <div class="hud hud-left">
+          <div><small>${goalMode ? 'CIBLE' : 'POIDS'}</small><b>${fmtKg(goalMode ? b.goal : b.cur)}</b><i>kg</i></div>
+          <div><small>DÉPART</small><b>${fmtKg(b.start)}</b><i>kg</i></div>
+        </div>
+        <div class="hud hud-right">
+          <div><small>PERDU</small><b class="${b.lost > 0 ? 'good' : ''}">${b.lost > 0 ? '−' : ''}${fmtKg(Math.abs(b.lost))}</b><i>kg</i></div>
+          <div><small>RESTANT</small><b>${fmtKg(b.left)}</b><i>kg</i></div>
+        </div>
+        <div class="holo-mode">
+          <button type="button" class="${goalMode ? '' : 'on'}" data-holo-mode="now">Maintenant</button>
+          <button type="button" class="${goalMode ? 'on' : ''}" data-holo-mode="goal">Objectif ${fmtKg(b.goal)} kg</button>
+        </div>
+      </div>
+
+      <div class="load ${done ? 'done' : ''}">
+        <div class="load-top"><span>${done ? 'TRANSFORMATION TERMINÉE' : 'TRANSFORMATION EN COURS'}</span><b>${String(pct).replace('.', ',')} %</b></div>
+        <div class="load-bar"><span style="width:${Math.max(pct, 1.5)}%"></span></div>
+        <div class="load-scale"><span>${fmtKg(b.start)} kg</span><span>${fmtKg(b.cur)} kg</span><span>${fmtKg(b.goal)} kg</span></div>
+      </div>
+
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn" data-action="weigh">⚖️ Pesée</button>
+        <button class="btn" data-action="photos">📷 Photos${photos.length ? ` (${photos.length})` : ''}</button>
+      </div>
+      ${!photoThisMonth ? `<div class="lab-note">📸 Photo du mois de ${MONTHS[+monthKey.slice(5) - 1]} pas encore faite : face, profil et dos.</div>` : ''}
+      ${sinceW === null ? `<div class="lab-note">⚖️ Fais ta première pesée pour lancer la barre de transformation.</div>`
+        : sinceW >= 7 ? `<div class="lab-note">⚖️ Dernière pesée il y a ${sinceW} jours.</div>` : ''}
+    </section>`;
+}
+
+/* ---------- Pesée ---------- */
+function weightChartSvg() {
+  const pts = state.weights.slice(-30);
+  if (pts.length < 2) return '';
+  const W = 320, H = 120, P = 10;
+  const vals = pts.map(p => p.kg).concat([state.body.goalWeight]);
+  const lo = Math.min(...vals) - 0.5, hi = Math.max(...vals) + 0.5;
+  const t0 = parseKey(pts[0].date).getTime(), t1 = parseKey(pts[pts.length - 1].date).getTime() || t0 + 1;
+  const X = d => P + ((parseKey(d).getTime() - t0) / Math.max(1, t1 - t0)) * (W - 2 * P);
+  const Y = v => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.date).toFixed(1)},${Y(p.kg).toFixed(1)}`).join(' ');
+  const gy = Y(state.body.goalWeight).toFixed(1);
+  return `
+    <svg class="wchart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Courbe de poids">
+      <line x1="0" x2="${W}" y1="${gy}" y2="${gy}" class="goal-line"/>
+      <path d="${line}" class="w-line"/>
+      ${pts.map(p => `<circle cx="${X(p.date).toFixed(1)}" cy="${Y(p.kg).toFixed(1)}" r="2.6" class="w-dot"/>`).join('')}
+    </svg>
+    <div class="small faint" style="display:flex;justify-content:space-between;margin-top:4px"><span>${fmtDayShort(pts[0].date)}</span><span style="color:var(--warn)">— objectif ${fmtKg(state.body.goalWeight)} kg</span><span>${fmtDayShort(pts[pts.length - 1].date)}</span></div>`;
+}
+
+function weighBody() {
+  const list = state.weights.slice(-8).reverse();
+  return `
+    <label class="field"><span>Poids de ce matin (kg)</span>
+      <input class="input" id="w-input" inputmode="decimal" placeholder="${fmtKg(currentWeight())}" autocomplete="off" style="font-size:28px;font-weight:800;text-align:center">
+    </label>
+    <button type="button" class="btn primary block" data-w-save="1">Enregistrer la pesée</button>
+    ${state.weights.length >= 2 ? `<div class="field" style="margin-top:18px"><span>Évolution</span>${weightChartSvg()}</div>` : ''}
+    ${list.length ? `<div class="field" style="margin-top:14px"><span>Dernières pesées</span>
+      ${list.map(w => `<div class="entry"><div class="entry-body"><div class="entry-title">${fmtKg(w.kg)} kg</div><div class="entry-meta">${esc(fmtDayLong(w.date))}</div></div><button type="button" class="icon-btn danger" data-w-del="${esc(w.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
+    </div>` : ''}`;
+}
+
+function openWeighSheet() {
+  openSheet({
+    tag: '[SYSTÈME] Pesée',
+    title: '⚖️ Nouvelle pesée',
+    body: `<div id="weigh-body">${weighBody()}</div>`,
+    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+    onMount(sheet, close) {
+      sheet.addEventListener('click', e => {
+        if (e.target.closest('[data-w-save]')) {
+          const raw = $('#w-input', sheet).value.replace(',', '.').trim();
+          const kg = Math.round(parseFloat(raw) * 10) / 10;
+          if (!Number.isFinite(kg) || kg < 30 || kg > 300) { toast('Poids invalide', 'Exemple : 95,8', 'warn'); return; }
+          close(null);
+          addWeight(kg);
+          return;
+        }
+        const del = e.target.closest('[data-w-del]');
+        if (del) {
+          state.weights = state.weights.filter(w => w.id !== del.dataset.wDel);
+          save();
+          $('#weigh-body', sheet).innerHTML = weighBody();
+          render();
+        }
+      });
+    },
+  });
+}
+
+const MILESTONES = [0.25, 0.5, 0.75, 1];
+function addWeight(kg) {
+  const before = bodyProgress();
+  const date = todayKey();
+  state.weights = state.weights.filter(w => w.date !== date); // une pesée par jour
+  state.weights.push({ id: uid(), date, kg });
+  state.weights.sort((a, b) => a.date.localeCompare(b.date));
+  save();
+  const after = bodyProgress();
+  render();
+  const prev = state.weights.length >= 2 ? state.weights[state.weights.length - 2].kg : before.start;
+  const d = kg - prev;
+  toast('Pesée enregistrée', `${fmtKg(kg)} kg · ${Math.abs(d) < 0.05 ? 'stable' : (d < 0 ? '−' : '+') + fmtKg(Math.abs(d)) + ' kg'} · transformation ${Math.round(after.progress * 100)} %`);
+  const crossed = MILESTONES.filter(m => before.progress < m && after.progress >= m).pop();
+  if (crossed) {
+    setTimeout(() => openSheet({
+      center: true,
+      tag: '[SYSTÈME] Alerte',
+      body: `<div class="levelup"><div class="levelup-txt">${crossed === 1 ? 'OBJECTIF ATTEINT' : 'PALIER DE TRANSFORMATION'}</div>
+        <div class="levelup-big">${Math.round(crossed * 100)} %</div>
+        <p>${crossed === 1 ? `Tu as atteint ${fmtKg(state.body.goalWeight)} kg. Le Système te reconnaît.` : `Tu as parcouru ${Math.round(crossed * 100)} % du chemin vers ${fmtKg(state.body.goalWeight)} kg. Continue.`}</p></div>`,
+      buttons: [{ label: 'Continuer', value: true, cls: 'primary' }],
+    }), 500);
+  }
+}
+
+/* ---------- Photos (stockées dans le téléphone, IndexedDB) ---------- */
+let photos = []; // { id, date, pose, kg, blob }
+const photoUrls = new Map();
+const photoUrl = p => { if (!photoUrls.has(p.id)) photoUrls.set(p.id, URL.createObjectURL(p.blob)); return photoUrls.get(p.id); };
+
+const PhotoDB = {
+  db: null,
+  open() {
+    if (this.db) return Promise.resolve(this.db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('monSysteme', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('photos', { keyPath: 'id' });
+      r.onsuccess = () => { this.db = r.result; res(this.db); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async tx(mode, fn) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const t = db.transaction('photos', mode);
+      const out = fn(t.objectStore('photos'));
+      t.oncomplete = () => res(out && out.result !== undefined ? out.result : undefined);
+      t.onerror = () => rej(t.error);
+    });
+  },
+  all() { return this.tx('readonly', s => s.getAll()); },
+  put(p) { return this.tx('readwrite', s => s.put(p)); },
+  del(id) { return this.tx('readwrite', s => s.delete(id)); },
+  clear() { return this.tx('readwrite', s => s.clear()); },
+};
+
+async function loadPhotos() {
+  try {
+    photos = ((await PhotoDB.all()) || []).filter(p => p && p.blob && isValidKey(p.date));
+    photos.sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts);
+  } catch (e) {
+    console.warn('Photos indisponibles', e);
+    photos = [];
+  }
+}
+
+function blobToImage(blob) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Image illisible')); };
+    img.src = url;
+  });
+}
+async function resizePhoto(file, max = 1400) {
+  const img = await blobToImage(file);
+  const r = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.round(img.naturalWidth * r), h = Math.round(img.naturalHeight * r);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').drawImage(img, 0, 0, w, h);
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error('Conversion impossible')), 'image/jpeg', 0.85));
+}
+
+async function addPhotos(files) {
+  let n = 0;
+  for (const f of files) {
+    try {
+      const blob = await resizePhoto(f);
+      const p = { id: uid(), date: todayKey(), ts: Date.now(), pose: ui.photoPose, kg: currentWeight(), blob };
+      await PhotoDB.put(p);
+      photos.push(p);
+      n++;
+    } catch (e) {
+      console.error(e);
+      toast('Photo ignorée', e.message || 'Format non pris en charge', 'warn');
+    }
+  }
+  if (n) {
+    toast('Archive mise à jour', `${n} photo${n > 1 ? 's' : ''} ajoutée${n > 1 ? 's' : ''} · ${poseLabel(ui.photoPose)}`);
+    refreshPhotoSheet();
+    render();
+  }
+}
+
+function photosBody() {
+  const pose = ui.photoPose;
+  const same = photos.filter(p => p.pose === pose);
+  const first = same[0], lastP = same[same.length - 1];
+  const byMonth = new Map();
+  [...photos].reverse().forEach(p => {
+    const k = p.date.slice(0, 7);
+    if (!byMonth.has(k)) byMonth.set(k, []);
+    byMonth.get(k).push(p);
+  });
+  const card = (p, label) => `
+    <button type="button" class="cmp-card" data-photo="${esc(p.id)}">
+      <img src="${photoUrl(p)}" alt="">
+      <span><b>${label}</b> · ${esc(fmtDayShort(p.date))} · ${fmtKg(p.kg)} kg</span>
+    </button>`;
+  return `
+    <div class="seg" style="margin-bottom:12px">
+      ${POSES.map(p => `<button type="button" class="${p.key === pose ? 'on' : ''}" data-pose="${p.key}">${p.label}</button>`).join('')}
+    </div>
+    <button type="button" class="btn primary block" data-photo-add="1">📷 Ajouter une photo · ${poseLabel(pose)}</button>
+    <p class="small faint" style="margin:8px 0 0">Prends-toi toujours au même endroit, même lumière, même distance : la comparaison sera plus parlante.</p>
+
+    ${same.length >= 2 ? `
+      <div class="field" style="margin-top:18px"><span>Avant / Maintenant · ${poseLabel(pose)}</span>
+        <div class="cmp">${card(first, 'Avant')}${card(lastP, 'Maintenant')}</div>
+        <div class="small center" style="margin-top:8px;color:var(--good)">${first.kg - lastP.kg > 0 ? `−${fmtKg(first.kg - lastP.kg)} kg entre ces deux photos` : 'Continue, la différence va apparaître.'}</div>
+      </div>` : ''}
+
+    <div class="field" style="margin-top:18px"><span>Archives</span>
+      ${photos.length ? [...byMonth].map(([k, list]) => `
+        <div class="ph-month">${MONTHS[+k.slice(5) - 1]} ${k.slice(0, 4)}</div>
+        <div class="ph-grid">${list.map(p => `
+          <button type="button" class="ph" data-photo="${esc(p.id)}">
+            <img src="${photoUrl(p)}" alt="" loading="lazy">
+            <span>${poseLabel(p.pose)} · ${fmtKg(p.kg)}</span>
+          </button>`).join('')}</div>`).join('')
+        : `<div class="empty"><span class="sys">[SYSTÈME]</span>Aucune photo. Commence par face, profil et dos.</div>`}
+    </div>`;
+}
+
+let photoSheet = null;
+function refreshPhotoSheet() {
+  if (photoSheet && photoSheet.isConnected) $('#photos-body', photoSheet).innerHTML = photosBody();
+}
+
+function openPhotosSheet() {
+  openSheet({
+    tag: '[SYSTÈME] Archives corporelles',
+    title: '📷 Mes photos',
+    body: `<div id="photos-body">${photosBody()}</div>`,
+    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+    onMount(sheet) {
+      photoSheet = sheet;
+      sheet.addEventListener('click', e => {
+        const pose = e.target.closest('[data-pose]');
+        if (pose) { ui.photoPose = pose.dataset.pose; refreshPhotoSheet(); return; }
+        if (e.target.closest('[data-photo-add]')) { $('#photo-file').click(); return; }
+        const ph = e.target.closest('[data-photo]');
+        if (ph) openPhotoViewer(ph.dataset.photo);
+      });
+    },
+  });
+}
+
+function openPhotoViewer(id) {
+  const p = photos.find(x => x.id === id);
+  if (!p) return;
+  openSheet({
+    center: true,
+    tag: `[SYSTÈME] ${poseLabel(p.pose)}`,
+    body: `<img class="viewer-img" src="${photoUrl(p)}" alt="">
+      <p class="center" style="margin:10px 0 0">${esc(fmtDayLong(p.date))} · <b style="color:var(--neon-2)">${fmtKg(p.kg)} kg</b></p>`,
+    buttons: [{ label: 'Fermer', value: 'close', cls: 'primary' }, { label: 'Supprimer la photo', value: 'del', cls: 'danger' }],
+  }).then(async v => {
+    if (v !== 'del') return;
+    if (!(await confirmBox('Supprimer cette photo ?', 'Elle sera effacée de ce téléphone.', 'Supprimer', true))) return;
+    await PhotoDB.del(p.id).catch(() => {});
+    photos = photos.filter(x => x.id !== p.id);
+    if (photoUrls.has(p.id)) { URL.revokeObjectURL(photoUrls.get(p.id)); photoUrls.delete(p.id); }
+    refreshPhotoSheet();
+    render();
+    toast('Photo supprimée');
+  });
+}
+
+const blobToDataUrl = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+async function dataUrlToBlob(u) { return (await fetch(u)).blob(); }
 
 /* =========================================================
    Onglet 2 : Aujourd'hui
@@ -705,6 +1054,18 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Objectif de poids</div></div>
+      <div class="btn-row">
+        <label class="field" style="margin-bottom:0"><span>Poids de départ (kg)</span>
+          <input class="input" id="start-weight" inputmode="decimal" value="${fmtKg(state.body.startWeight)}" autocomplete="off">
+        </label>
+        <label class="field" style="margin-bottom:0"><span>Objectif (kg)</span>
+          <input class="input" id="goal-weight" inputmode="decimal" value="${fmtKg(state.body.goalWeight)}" autocomplete="off">
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><div class="panel-title">Sauvegarde</div></div>
       <p class="small muted" style="margin-top:0">Tes données sont dans ce téléphone. Exporte régulièrement un fichier (dans "Fichiers" ou iCloud Drive) pour ne jamais rien perdre.</p>
       <p class="small faint">Dernier export : ${lastExp ? `${lastExp.toLocaleDateString('fr-FR')} à ${lastExp.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : 'jamais'}</p>
@@ -827,7 +1188,11 @@ function openActivityEditor(activity) {
 /* ---------- Export / Import ---------- */
 async function exportSave() {
   const now = new Date();
-  const payload = { app: 'mon-systeme', appVersion: APP_VERSION, exportedAt: now.toISOString(), data: { ...state, lastExportAt: now.toISOString() } };
+  let photoData = [];
+  try {
+    photoData = await Promise.all(photos.map(async p => ({ id: p.id, date: p.date, ts: p.ts, pose: p.pose, kg: p.kg, image: await blobToDataUrl(p.blob) })));
+  } catch (e) { console.warn('Photos non exportées', e); }
+  const payload = { app: 'mon-systeme', appVersion: APP_VERSION, exportedAt: now.toISOString(), data: { ...state, lastExportAt: now.toISOString() }, photos: photoData };
   const json = JSON.stringify(payload, null, 2);
   const filename = `mon-systeme-sauvegarde-${dateKey(now)}.json`;
   let ok = false;
@@ -862,12 +1227,25 @@ function importSave(file) {
       const data = parsed && parsed.data ? parsed.data : parsed;
       const next = sanitizeState(data);
       const lv = levelInfo(next.logs.reduce((s, l) => s + l.xp, 0));
+      const inPhotos = Array.isArray(parsed && parsed.photos) ? parsed.photos.filter(p => p && typeof p.image === 'string' && p.image.startsWith('data:image') && isValidKey(p.date)) : null;
       const ok = await confirmBox('Importer cette sauvegarde ?',
-        `Joueur : <b>${esc(next.playerName)}</b> — niveau ${lv.level}, ${next.logs.length} quêtes, ${next.activities.length} activités.<br><br>Elle <b>remplacera</b> les données actuelles de ce téléphone.`,
+        `Joueur : <b>${esc(next.playerName)}</b> — niveau ${lv.level}, ${next.logs.length} quêtes, ${next.weights.length} pesées${inPhotos ? `, ${inPhotos.length} photos` : ''}.<br><br>Elle <b>remplacera</b> les données actuelles de ce téléphone.`,
         'Importer', false);
       if (!ok) return;
       state = next;
       save();
+      if (inPhotos) {
+        await PhotoDB.clear().catch(() => {});
+        photoUrls.forEach(u => URL.revokeObjectURL(u)); photoUrls.clear();
+        photos = [];
+        for (const p of inPhotos) {
+          try {
+            const rec = { id: typeof p.id === 'string' ? p.id : uid(), date: p.date, ts: +p.ts || Date.now(), pose: POSES.some(x => x.key === p.pose) ? p.pose : 'face', kg: +p.kg || next.body.startWeight, blob: await dataUrlToBlob(p.image) };
+            await PhotoDB.put(rec);
+            photos.push(rec);
+          } catch (e) { console.warn('Photo non importée', e); }
+        }
+      }
       ui.calMonth = null; ui.selectedDay = null;
       render();
       toast('Sauvegarde importée', `Bon retour, ${state.playerName}.`);
@@ -880,14 +1258,18 @@ function importSave(file) {
 }
 
 async function resetAll() {
-  const ok1 = await confirmBox('Tout remettre à zéro ?', "Niveau, XP, stats, historique et activités personnalisées seront effacés de ce téléphone. Conseil : exporte ta sauvegarde avant.", 'Continuer', true);
+  const ok1 = await confirmBox('Tout remettre à zéro ?', "Niveau, XP, stats, historique, pesées, photos et activités personnalisées seront effacés de ce téléphone. Conseil : exporte ta sauvegarde avant.", 'Continuer', true);
   if (!ok1) return;
   const ok2 = await confirmBox('Dernière confirmation', "Cette action est <b>définitive</b>. Effacer toute ta progression ?", 'Oui, tout effacer', true);
   if (!ok2) return;
-  const name = state.playerName;
+  const name = state.playerName, body = { ...state.body };
   state = freshState();
   state.playerName = name;
+  state.body = body;
   save();
+  await PhotoDB.clear().catch(() => {});
+  photoUrls.forEach(u => URL.revokeObjectURL(u)); photoUrls.clear();
+  photos = [];
   ui.calMonth = null; ui.selectedDay = null;
   go('home');
   toast('Système réinitialisé', 'Une nouvelle aventure commence.');
@@ -928,9 +1310,14 @@ document.addEventListener('click', e => {
     return render();
   }
 
+  const hm = t.closest('#view [data-holo-mode]');
+  if (hm) { ui.holoMode = hm.dataset.holoMode; return render(); }
+
   const action = t.closest('#view [data-action]');
   if (action) {
     const a = action.dataset.action;
+    if (a === 'weigh') return openWeighSheet();
+    if (a === 'photos') return openPhotosSheet();
     if (a === 'export') return exportSave();
     if (a === 'import') return $('#import-file').click();
     if (a === 'reset') return resetAll();
@@ -942,6 +1329,23 @@ document.addEventListener('change', e => {
     state.playerName = e.target.value.trim().slice(0, 40) || 'Chasseur';
     save();
     toast('Profil mis à jour', state.playerName);
+  }
+  if (e.target.id === 'start-weight' || e.target.id === 'goal-weight') {
+    const kg = Math.round(parseFloat(e.target.value.replace(',', '.')) * 10) / 10;
+    const key = e.target.id === 'start-weight' ? 'startWeight' : 'goalWeight';
+    if (!Number.isFinite(kg) || kg < 30 || kg > 300) {
+      toast('Poids invalide', 'Exemple : 86', 'warn');
+      e.target.value = fmtKg(state.body[key]);
+      return;
+    }
+    state.body[key] = kg;
+    save();
+    e.target.value = fmtKg(kg);
+    toast('Objectif mis à jour', `${fmtKg(state.body.startWeight)} kg → ${fmtKg(state.body.goalWeight)} kg`);
+  }
+  if (e.target.id === 'photo-file' && e.target.files && e.target.files.length) {
+    addPhotos([...e.target.files]);
+    e.target.value = '';
   }
   if (e.target.id === 'import-file' && e.target.files && e.target.files[0]) {
     importSave(e.target.files[0]);
@@ -983,11 +1387,13 @@ function setupServiceWorker() {
 /* =========================================================
    Démarrage
    ========================================================= */
-function start() {
+async function start() {
   $('#app-version').textContent = APP_VERSION;
   if (!localStorage.getItem(STORAGE_KEY)) save();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   render();
+  await loadPhotos();
+  if (photos.length) render();
   try {
     if (sessionStorage.getItem('monSysteme.updated')) {
       sessionStorage.removeItem('monSysteme.updated');
