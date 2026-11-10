@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -20,6 +20,7 @@ const STATS = [
   { key: 'discipline', name: 'Discipline', icon: '⚔️', desc: 'Avancer, être régulier' },
 ];
 const STAT_KEYS = STATS.map(s => s.key);
+const MEAL_KEYS = ['matin', 'midi', 'soir', 'collation'];
 const statByKey = Object.fromEntries(STATS.map(s => [s.key, s]));
 
 /* ---------- Règles "réalistes" (réglables) ----------
@@ -53,12 +54,12 @@ const DIFFICULTIES = [
 const diffMult = k => (DIFFICULTIES.find(d => d.key === k) || DIFFICULTIES[1]).mult;
 
 const RANKS = [
-  { letter: 'E', minLevel: 1, title: 'Chasseur de rang E' },
-  { letter: 'D', minLevel: 10, title: 'Chasseur de rang D' },
-  { letter: 'C', minLevel: 20, title: 'Chasseur de rang C' },
-  { letter: 'B', minLevel: 35, title: 'Chasseur de rang B' },
-  { letter: 'A', minLevel: 50, title: 'Chasseur de rang A' },
-  { letter: 'S', minLevel: 70, title: 'Chasseur de rang S' },
+  { letter: 'E', minLevel: 1, title: 'Charisme de rang E' },
+  { letter: 'D', minLevel: 10, title: 'Charisme de rang D' },
+  { letter: 'C', minLevel: 20, title: 'Charisme de rang C' },
+  { letter: 'B', minLevel: 35, title: 'Charisme de rang B' },
+  { letter: 'A', minLevel: 50, title: 'Charisme de rang A' },
+  { letter: 'S', minLevel: 70, title: 'Charisme de rang S' },
 ];
 
 const DEFAULT_ACTIVITIES = [
@@ -112,8 +113,9 @@ function freshState() {
     lastExportAt: null,
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
     logs: [],
-    body: { startWeight: 96.5, goalWeight: 86 },
+    body: { startWeight: 96.5, goalWeight: 86, heightCm: null, age: null, waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
     weights: [],
+    meals: [],
   };
 }
 
@@ -150,14 +152,34 @@ function sanitizeState(raw) {
       xp: Number.isFinite(l.xp) && l.xp >= 0 ? Math.round(l.xp) : 0,
     }));
   const okKg = v => Number.isFinite(v) && v >= 30 && v <= 300;
+  const inR = (v, a, b) => Number.isFinite(v) && v >= a && v <= b;
   if (raw.body && typeof raw.body === 'object') {
-    if (okKg(raw.body.startWeight)) s.body.startWeight = raw.body.startWeight;
-    if (okKg(raw.body.goalWeight)) s.body.goalWeight = raw.body.goalWeight;
+    const rb = raw.body;
+    if (okKg(rb.startWeight)) s.body.startWeight = rb.startWeight;
+    if (okKg(rb.goalWeight)) s.body.goalWeight = rb.goalWeight;
+    if (inR(rb.heightCm, 120, 230)) s.body.heightCm = rb.heightCm;
+    if (inR(rb.age, 10, 100)) s.body.age = rb.age;
+    if (inR(rb.waistCm, 50, 200)) s.body.waistCm = rb.waistCm;
+    if (inR(rb.neckCm, 25, 70)) s.body.neckCm = rb.neckCm;
+    if (inR(rb.fatStart, 5, 60)) s.body.fatStart = rb.fatStart;
+    if (inR(rb.kcalTarget, 1000, 6000)) s.body.kcalTarget = rb.kcalTarget;
   }
   s.weights = (Array.isArray(raw.weights) ? raw.weights : [])
     .filter(w => w && isValidKey(w.date) && okKg(w.kg))
-    .map(w => ({ id: typeof w.id === 'string' && w.id ? w.id : uid(), date: w.date, kg: Math.round(w.kg * 10) / 10 }))
+    .map(w => ({
+      id: typeof w.id === 'string' && w.id ? w.id : uid(), date: w.date, kg: Math.round(w.kg * 10) / 10,
+      fat: inR(w.fat, 3, 70) ? w.fat : null, muscle: inR(w.muscle, 10, 80) ? w.muscle : null,
+    }))
     .sort((a, b) => a.date.localeCompare(b.date));
+  const num = v => (Number.isFinite(v) && v >= 0 ? v : 0);
+  s.meals = (Array.isArray(raw.meals) ? raw.meals : [])
+    .filter(m => m && isValidKey(m.date) && MEAL_KEYS.includes(m.meal) && typeof m.name === 'string')
+    .map(m => ({
+      id: typeof m.id === 'string' && m.id ? m.id : uid(), date: m.date, meal: m.meal, ts: num(m.ts),
+      name: m.name.slice(0, 120), grams: Math.min(5000, num(m.grams)),
+      kcal: num(m.kcal), p: num(m.p), g: num(m.g), l: num(m.l),
+      src: typeof m.src === 'string' ? m.src.slice(0, 10) : 'manuel',
+    }));
   return s;
 }
 
@@ -197,8 +219,11 @@ function entryPoints(log) {
   return base * diffMult(log.difficulty);
 }
 
-/* XP nécessaire pour passer du niveau n au niveau n+1 */
-const xpToNext = n => Math.round(100 * Math.pow(n, 1.5));
+/* XP nécessaire pour passer du niveau n au niveau n+1.
+   Calibré "vraie vie" : avec ~2 h d'activité réelle par jour (≈ 150 XP),
+   rang D (niv. 10) ≈ 3 mois, C (20) ≈ 1 an, B (35) ≈ 3 ans, A (50) ≈ 6 ans, S (70) ≈ 12 ans. */
+const xpToNext = n => 200 + 250 * n;
+const NUTRI_XP = 50; // journée de nutrition validée
 
 function levelInfo(totalXp) {
   let level = 1, rest = totalXp;
@@ -218,17 +243,17 @@ function gradeFor(v) {
   if (v >= 20) return 'D';
   return 'E';
 }
-const totalXp = () => state.logs.reduce((s, l) => s + l.xp, 0);
+const totalXp = () => state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP;
 
 /* Recalcule les stats en "rejouant" chaque jour depuis la 1re activité.
    Ainsi, supprimer une entrée corrige tout automatiquement. */
 function computeStats(logs, today) {
   const values = {}, last = {}, weekAgo = {};
   STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; weekAgo[k] = RULES.statStart; });
-  if (!logs.length) return { values, last, weekAgo };
 
   const byDay = new Map();
   let first = today;
+  if (!logs.length && !nutritionDays(today).size) return { values, last, weekAgo };
   for (const l of logs) {
     if (l.date > today) continue;
     if (l.date < first) first = l.date;
@@ -238,6 +263,13 @@ function computeStats(logs, today) {
     byDay.set(l.date, o);
   }
   for (const o of byDay.values()) o.discipline = (o.discipline || 0) + RULES.regularityBonus;
+  // journée de nutrition validée = 1 point de Discipline
+  for (const d of nutritionDays(today)) {
+    const o = byDay.get(d) || {};
+    o.discipline = (o.discipline || 0) + 1;
+    byDay.set(d, o);
+    if (d < first) first = d;
+  }
 
   const weekAgoKey = addDays(today, -7);
   let day = first;
@@ -336,9 +368,9 @@ const confirmBox = (title, text, okLabel = 'Confirmer', danger = false) =>
 /* =========================================================
    Navigation
    ========================================================= */
-const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', history: 'Journal des quêtes', settings: 'Réglages' };
+const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', history: 'Journal des quêtes', settings: 'Réglages' };
 let currentTab = 'home';
-const ui = { calMonth: null, selectedDay: null, holoMode: 'now', photoPose: 'face' };
+const ui = { calMonth: null, selectedDay: null, holoMode: 'now', photoPose: 'face', mealDay: null };
 
 function go(tab) {
   currentTab = tab;
@@ -350,7 +382,7 @@ function go(tab) {
 
 function render() {
   const view = $('#view');
-  const fn = { home: renderHome, today: renderToday, history: renderHistory, settings: renderSettings }[currentTab];
+  const fn = { home: renderHome, today: renderToday, meals: renderMeals, history: renderHistory, settings: renderSettings }[currentTab];
   view.innerHTML = fn();
   view.style.animation = 'none'; void view.offsetWidth; view.style.animation = '';
   if (currentTab === 'home') mountHolo();
@@ -421,6 +453,8 @@ function renderHome() {
       <div class="bar-caption"><span>XP ${fmtNum(lv.into)} / ${fmtNum(lv.need)}</span><span>Total ${fmtNum(xp)}</span></div>
     </section>
 
+    ${renderNutritionCard(today)}
+
     <section class="panel">
       <div class="streak">
         <div class="streak-flame ${st.current ? '' : 'off'}">🔥</div>
@@ -482,15 +516,48 @@ function bodyProgress() {
   return { start, goal, cur, progress, lost: start - cur, left: Math.max(0, Math.abs(cur - goal)) };
 }
 
+/* Composition corporelle.
+   Priorité : 1) valeurs de ta balance (pesée), 2) mensurations (formule US Navy),
+   3) estimation à partir des photos de départ, ajustée quand le poids change
+   (on considère qu'environ 75 % du poids perdu est de la graisse). */
+const LEAN_MUSCLE = 0.53; // part de muscle squelettique dans la masse maigre (homme adulte, moyenne)
+function composition(kg) {
+  const b = state.body;
+  const W = kg != null ? kg : currentWeight();
+  const lastScale = [...state.weights].reverse().find(w => w.fat != null);
+  let fat, src, muscle = null;
+  if (kg == null && lastScale) {
+    // on part de la dernière mesure de la balance, ajustée si le poids a bougé depuis
+    const fm = lastScale.kg * lastScale.fat / 100 - 0.75 * (lastScale.kg - W);
+    fat = (fm / W) * 100;
+    muscle = lastScale.muscle;
+    src = 'balance';
+  } else if (b.heightCm && b.waistCm && b.neckCm && b.waistCm > b.neckCm) {
+    const navy = 495 / (1.0324 - 0.19077 * Math.log10(b.waistCm - b.neckCm) + 0.15456 * Math.log10(b.heightCm)) - 450;
+    const fm = (navy / 100) * currentWeight() - 0.75 * (currentWeight() - W);
+    fat = (fm / W) * 100;
+    src = 'mensurations';
+  } else {
+    const fm = b.startWeight * (b.fatStart / 100) - 0.75 * (b.startWeight - W);
+    fat = (fm / W) * 100;
+    src = 'estimation';
+  }
+  fat = Math.max(4, Math.min(60, fat));
+  if (muscle == null) muscle = (100 - fat) * LEAN_MUSCLE;
+  return { fat, muscle, src };
+}
+const fmtPct = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
+
 function renderBodyPanel(today) {
   const b = bodyProgress();
   const pct = Math.round(b.progress * 1000) / 10;
   const monthKey = today.slice(0, 7);
-  const photoThisMonth = photos.some(p => p.date.slice(0, 7) === monthKey);
+  const photoThisMonth = bodyPhotos().some(p => p.date.slice(0, 7) === monthKey);
   const lastW = state.weights[state.weights.length - 1];
   const sinceW = lastW ? daysBetween(lastW.date, today) : null;
   const goalMode = ui.holoMode === 'goal';
   const done = b.progress >= 1;
+  const comp = composition(goalMode ? b.goal : null);
   return `
     <section class="panel lab">
       <div class="lab-head">
@@ -503,11 +570,14 @@ function renderBodyPanel(today) {
         <div class="hud hud-left">
           <div><small>${goalMode ? 'CIBLE' : 'POIDS'}</small><b>${fmtKg(goalMode ? b.goal : b.cur)}</b><i>kg</i></div>
           <div><small>DÉPART</small><b>${fmtKg(b.start)}</b><i>kg</i></div>
+          <div><small>GRAISSE${comp.src === 'balance' ? '' : ' ≈'}</small><b class="fat">${fmtPct(comp.fat)}</b><i>%</i></div>
         </div>
         <div class="hud hud-right">
           <div><small>PERDU</small><b class="${b.lost > 0 ? 'good' : ''}">${b.lost > 0 ? '−' : ''}${fmtKg(Math.abs(b.lost))}</b><i>kg</i></div>
           <div><small>RESTANT</small><b>${fmtKg(b.left)}</b><i>kg</i></div>
+          <div><small>MUSCLES${comp.src === 'balance' && state.weights.some(w => w.muscle != null) ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
         </div>
+        <div class="hud-src">${goalMode ? 'COMPOSITION VISÉE' : comp.src === 'balance' ? 'SOURCE : BALANCE' : comp.src === 'mensurations' ? 'SOURCE : MENSURATIONS' : 'ESTIMATION · PHOTOS'}</div>
         <div class="holo-mode">
           <button type="button" class="${goalMode ? '' : 'on'}" data-holo-mode="now">Maintenant</button>
           <button type="button" class="${goalMode ? 'on' : ''}" data-holo-mode="goal">Objectif ${fmtKg(b.goal)} kg</button>
@@ -522,7 +592,7 @@ function renderBodyPanel(today) {
 
       <div class="btn-row" style="margin-top:14px">
         <button class="btn" data-action="weigh">⚖️ Pesée</button>
-        <button class="btn" data-action="photos">📷 Photos${photos.length ? ` (${photos.length})` : ''}</button>
+        <button class="btn" data-action="photos">📷 Photos${bodyPhotos().length ? ` (${bodyPhotos().length})` : ''}</button>
       </div>
       ${!photoThisMonth ? `<div class="lab-note">📸 Photo du mois de ${MONTHS[+monthKey.slice(5) - 1]} pas encore faite : face, profil et dos.</div>` : ''}
       ${sinceW === null ? `<div class="lab-note">⚖️ Fais ta première pesée pour lancer la barre de transformation.</div>`
@@ -557,10 +627,14 @@ function weighBody() {
     <label class="field"><span>Poids de ce matin (kg)</span>
       <input class="input" id="w-input" inputmode="decimal" placeholder="${fmtKg(currentWeight())}" autocomplete="off" style="font-size:28px;font-weight:800;text-align:center">
     </label>
+    <div class="btn-row">
+      <label class="field"><span>Graisse % (balance)</span><input class="input" id="w-fat" inputmode="decimal" placeholder="facultatif" autocomplete="off"></label>
+      <label class="field"><span>Muscles % (balance)</span><input class="input" id="w-muscle" inputmode="decimal" placeholder="facultatif" autocomplete="off"></label>
+    </div>
     <button type="button" class="btn primary block" data-w-save="1">Enregistrer la pesée</button>
     ${state.weights.length >= 2 ? `<div class="field" style="margin-top:18px"><span>Évolution</span>${weightChartSvg()}</div>` : ''}
     ${list.length ? `<div class="field" style="margin-top:14px"><span>Dernières pesées</span>
-      ${list.map(w => `<div class="entry"><div class="entry-body"><div class="entry-title">${fmtKg(w.kg)} kg</div><div class="entry-meta">${esc(fmtDayLong(w.date))}</div></div><button type="button" class="icon-btn danger" data-w-del="${esc(w.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
+      ${list.map(w => `<div class="entry"><div class="entry-body"><div class="entry-title">${fmtKg(w.kg)} kg${w.fat != null ? ` · ${fmtPct(w.fat)} % graisse` : ''}${w.muscle != null ? ` · ${fmtPct(w.muscle)} % muscles` : ''}</div><div class="entry-meta">${esc(fmtDayLong(w.date))}</div></div><button type="button" class="icon-btn danger" data-w-del="${esc(w.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
     </div>` : ''}`;
 }
 
@@ -576,8 +650,9 @@ function openWeighSheet() {
           const raw = $('#w-input', sheet).value.replace(',', '.').trim();
           const kg = Math.round(parseFloat(raw) * 10) / 10;
           if (!Number.isFinite(kg) || kg < 30 || kg > 300) { toast('Poids invalide', 'Exemple : 95,8', 'warn'); return; }
+          const opt = (id, a, b) => { const v = parseFloat($(id, sheet).value.replace(',', '.')); return Number.isFinite(v) && v >= a && v <= b ? Math.round(v * 10) / 10 : null; };
           close(null);
-          addWeight(kg);
+          addWeight(kg, opt('#w-fat', 3, 70), opt('#w-muscle', 10, 80));
           return;
         }
         const del = e.target.closest('[data-w-del]');
@@ -593,11 +668,11 @@ function openWeighSheet() {
 }
 
 const MILESTONES = [0.25, 0.5, 0.75, 1];
-function addWeight(kg) {
+function addWeight(kg, fat = null, muscle = null) {
   const before = bodyProgress();
   const date = todayKey();
   state.weights = state.weights.filter(w => w.date !== date); // une pesée par jour
-  state.weights.push({ id: uid(), date, kg });
+  state.weights.push({ id: uid(), date, kg, fat, muscle });
   state.weights.sort((a, b) => a.date.localeCompare(b.date));
   save();
   const after = bodyProgress();
@@ -619,7 +694,9 @@ function addWeight(kg) {
 }
 
 /* ---------- Photos (stockées dans le téléphone, IndexedDB) ---------- */
-let photos = []; // { id, date, pose, kg, blob }
+let photos = []; // { id, kind: 'body'|'meal', date, pose, meal, kg, blob }
+let photoTarget = null;
+const bodyPhotos = () => photos.filter(p => p.kind !== 'meal');
 const photoUrls = new Map();
 const photoUrl = p => { if (!photoUrls.has(p.id)) photoUrls.set(p.id, URL.createObjectURL(p.blob)); return photoUrls.get(p.id); };
 
@@ -683,7 +760,10 @@ async function addPhotos(files) {
   for (const f of files) {
     try {
       const blob = await resizePhoto(f);
-      const p = { id: uid(), date: todayKey(), ts: Date.now(), pose: ui.photoPose, kg: currentWeight(), blob };
+      const tg = photoTarget || { kind: 'body' };
+      const p = tg.kind === 'meal'
+        ? { id: uid(), kind: 'meal', meal: tg.meal, date: tg.date, ts: Date.now(), pose: 'face', kg: currentWeight(), blob }
+        : { id: uid(), kind: 'body', date: todayKey(), ts: Date.now(), pose: ui.photoPose, kg: currentWeight(), blob };
       await PhotoDB.put(p);
       photos.push(p);
       n++;
@@ -693,7 +773,7 @@ async function addPhotos(files) {
     }
   }
   if (n) {
-    toast('Archive mise à jour', `${n} photo${n > 1 ? 's' : ''} ajoutée${n > 1 ? 's' : ''} · ${poseLabel(ui.photoPose)}`);
+    toast('Archive mise à jour', `${n} photo${n > 1 ? 's' : ''} ajoutée${n > 1 ? 's' : ''} · ${photoTarget && photoTarget.kind === 'meal' ? 'repas ' + mealLabel(photoTarget.meal).label : poseLabel(ui.photoPose)}`);
     refreshPhotoSheet();
     render();
   }
@@ -701,10 +781,10 @@ async function addPhotos(files) {
 
 function photosBody() {
   const pose = ui.photoPose;
-  const same = photos.filter(p => p.pose === pose);
+  const same = bodyPhotos().filter(p => p.pose === pose);
   const first = same[0], lastP = same[same.length - 1];
   const byMonth = new Map();
-  [...photos].reverse().forEach(p => {
+  [...bodyPhotos()].reverse().forEach(p => {
     const k = p.date.slice(0, 7);
     if (!byMonth.has(k)) byMonth.set(k, []);
     byMonth.get(k).push(p);
@@ -728,7 +808,7 @@ function photosBody() {
       </div>` : ''}
 
     <div class="field" style="margin-top:18px"><span>Archives</span>
-      ${photos.length ? [...byMonth].map(([k, list]) => `
+      ${bodyPhotos().length ? [...byMonth].map(([k, list]) => `
         <div class="ph-month">${MONTHS[+k.slice(5) - 1]} ${k.slice(0, 4)}</div>
         <div class="ph-grid">${list.map(p => `
           <button type="button" class="ph" data-photo="${esc(p.id)}">
@@ -755,7 +835,7 @@ function openPhotosSheet() {
       sheet.addEventListener('click', e => {
         const pose = e.target.closest('[data-pose]');
         if (pose) { ui.photoPose = pose.dataset.pose; refreshPhotoSheet(); return; }
-        if (e.target.closest('[data-photo-add]')) { $('#photo-file').click(); return; }
+        if (e.target.closest('[data-photo-add]')) { photoTarget = { kind: 'body' }; $('#photo-file').click(); return; }
         const ph = e.target.closest('[data-photo]');
         if (ph) openPhotoViewer(ph.dataset.photo);
       });
@@ -768,7 +848,7 @@ function openPhotoViewer(id) {
   if (!p) return;
   openSheet({
     center: true,
-    tag: `[SYSTÈME] ${poseLabel(p.pose)}`,
+    tag: `[SYSTÈME] ${p.kind === 'meal' ? 'Repas · ' + mealLabel(p.meal).label : poseLabel(p.pose)}`,
     body: `<img class="viewer-img" src="${photoUrl(p)}" alt="">
       <p class="center" style="margin:10px 0 0">${esc(fmtDayLong(p.date))} · <b style="color:var(--neon-2)">${fmtKg(p.kg)} kg</b></p>`,
     buttons: [{ label: 'Fermer', value: 'close', cls: 'primary' }, { label: 'Supprimer la photo', value: 'del', cls: 'danger' }],
@@ -786,6 +866,403 @@ function openPhotoViewer(id) {
 
 const blobToDataUrl = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
 async function dataUrlToBlob(u) { return (await fetch(u)).blob(); }
+
+/* =========================================================
+   NUTRITION : repas, calories, protéines, glucides, lipides
+   Sources : table Ciqual 2020 (ANSES, embarquée, hors ligne)
+             + Open Food Facts (produits de marque, en ligne)
+   ========================================================= */
+const MEALS = [
+  { key: 'matin', label: 'Matin', icon: '🌅' },
+  { key: 'midi', label: 'Midi', icon: '☀️' },
+  { key: 'soir', label: 'Soir', icon: '🌙' },
+  { key: 'collation', label: 'Collation', icon: '🍎' },
+];
+const mealLabel = k => (MEALS.find(m => m.key === k) || MEALS[0]);
+
+/* --- objectifs du jour --- */
+function nutritionTargets() {
+  const b = state.body, W = currentWeight();
+  let kcal = b.kcalTarget, auto = false, tdee = null;
+  if (b.heightCm && b.age) {
+    const bmr = 10 * W + 6.25 * b.heightCm - 5 * b.age + 5; // Mifflin-St Jeor (homme)
+    tdee = bmr * 1.45; // activité modérée (sport + travail)
+    if (!kcal) { kcal = Math.max(1600, Math.round((tdee - 500) / 10) * 10); auto = true; }
+  }
+  const known = !!kcal;
+  if (!kcal) kcal = 2300;
+  const p = Math.round(1.8 * b.goalWeight);
+  const l = Math.round(0.8 * b.goalWeight);
+  const g = Math.max(80, Math.round((kcal - p * 4 - l * 9) / 4));
+  return { kcal, p, g, l, auto, known, tdee };
+}
+function dayTotals(date) {
+  const t = { kcal: 0, p: 0, g: 0, l: 0, meals: new Set(), n: 0 };
+  for (const m of state.meals) if (m.date === date) { t.kcal += m.kcal; t.p += m.p; t.g += m.g; t.l += m.l; t.meals.add(m.meal); t.n++; }
+  return t;
+}
+/* Journée validée (jours terminés seulement) : 3 repas notés, calories entre
+   objectif −400 et objectif +100, protéines ≥ 80 % de l'objectif. */
+let _nutriCache = { key: '', set: new Set() };
+function nutritionDays(today) {
+  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age;
+  if (_nutriCache.key === key) return _nutriCache.set;
+  const t = nutritionTargets();
+  const dates = new Set(state.meals.map(m => m.date));
+  const ok = new Set();
+  for (const d of dates) {
+    if (d >= today) continue;
+    const x = dayTotals(d);
+    const main = ['matin', 'midi', 'soir'].filter(k => x.meals.has(k)).length;
+    if (main >= 3 && x.kcal >= t.kcal - 400 && x.kcal <= t.kcal + 100 && x.p >= t.p * 0.8) ok.add(d);
+  }
+  _nutriCache = { key, set: ok };
+  return ok;
+}
+
+/* --- base Ciqual --- */
+let ciqual = null, ciqualLoading = null;
+const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange manger pris'.split(' '));
+const normTxt = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/œ/g, 'oe').replace(/[^a-z0-9]+/g, ' ').trim();
+const stemW = w => (w.length > 3 ? w.replace(/(s|x)$/, '') : w);
+const tokensOf = s => normTxt(s).split(' ').filter(w => w && !STOPW.has(w) && !/^\d+$/.test(w)).map(stemW);
+
+function loadCiqual() {
+  if (ciqual) return Promise.resolve(ciqual);
+  if (!ciqualLoading) {
+    ciqualLoading = fetch('data/ciqual.json').then(r => r.json()).then(d => {
+      ciqual = d.map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
+      return ciqual;
+    }).catch(e => { ciqualLoading = null; throw e; });
+  }
+  return ciqualLoading;
+}
+/* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
+const FOOD_DEFAULTS = {
+  'riz': 'Riz blanc, cuit, non salé', 'riz blanc': 'Riz blanc, cuit, non salé',
+  'pate': 'Pâtes sèches standard, cuites, non salées', 'pates': 'Pâtes sèches standard, cuites, non salées',
+  'oeuf': 'Oeuf, dur', 'oeuf dur': 'Oeuf, dur', 'oeuf au plat': 'Oeuf, au plat, sans matière grasse',
+  'banane': 'Banane, pulpe, crue', 'pomme': 'Pomme, pulpe et peau, crue',
+  'poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'blanc poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'filet poulet': 'Poulet, filet, sans peau, sauté/poêlé',
+  'pain': 'Pain, baguette, courante', 'baguette': 'Pain, baguette, courante',
+  'steak': 'Boeuf, steak haché 15% MG, cuit', 'steak hache': 'Boeuf, steak haché 15% MG, cuit', 'boeuf': 'Boeuf, steak ou bifteck, grillé',
+  'saumon': 'Saumon, cuit, sans précision (aliment moyen)', 'thon': 'Thon, au naturel, appertisé, égoutté',
+  'lait': 'Lait demi-écrémé, UHT', 'pomme terre': "Pomme de terre, bouillie/cuite à l'eau", 'patate': "Pomme de terre, bouillie/cuite à l'eau",
+  'frite': 'Frites de pommes de terre, surgelées, cuites en friteuse', 'avoine': 'Avoine, crue', 'flocon avoine': 'Avoine, crue',
+  'yaourt': 'Yaourt, lait fermenté ou spécialité laitière, nature', 'fromage blanc': 'Fromage blanc nature, 3% MG environ',
+  'huile': "Huile d'olive vierge extra", 'huile olive': "Huile d'olive vierge extra", 'lentille': "Lentille, bouillie/cuite à l'eau",
+  'haricot vert': 'Haricot vert, cuit', 'brocoli': 'Brocoli, cuit', 'jambon': 'Jambon cuit, supérieur', 'emmental': 'Emmental ou emmenthal',
+  'nutella': 'Pâte à tartiner chocolat et noisette', 'beurre': 'Beurre à 82% MG, doux', 'miel': 'Miel', 'sucre': 'Sucre blanc',
+  'jus orange': "Jus d'orange, pur jus", 'amande': 'Amande (avec peau)', 'beurre cacahuete': "Beurre de cacahuète ou Pâte d'arachide",
+};
+const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
+
+function searchCiqual(query, limit = 8) {
+  if (!ciqual) return [];
+  const q = tokensOf(query);
+  if (!q.length) return [];
+  const nq = normTxt(query);
+  const wantsRaw = /\bcru/.test(nq);
+  const def = FOOD_DEFAULTS[q.join(' ')];
+  const exacts = q.filter(w => w.length > 2).map(w => new RegExp(`(^| )${w}(s|x)?( |$)`));
+  const res = [];
+  for (const f of ciqual) {
+    let score = 0, matched = 0;
+    q.forEach((w, i) => {
+      let sc = 0;
+      for (const t of f._t) {
+        if (t === w) sc = Math.max(sc, 3);
+        else if (t.startsWith(w) || (w.length > 4 && w.startsWith(t) && t.length > 3)) sc = Math.max(sc, 2);
+      }
+      if (!sc && w.length > 3 && f._n.includes(w)) sc = 1;
+      if (sc) matched++;
+      score += sc;
+      if (i === 0 && f._t[0] === w) score += 2;
+    });
+    if (matched < Math.max(1, Math.ceil(q.length * 0.6))) continue;
+    score += (matched / q.length) * 3 - f._t.length * 0.08;
+    for (const re of exacts) if (re.test(f._n)) score += 1.5;
+    if (!wantsRaw && COOKED_GROUPS.test(f.grp || '')) { if (/\bcuit/.test(f._n)) score += 1; if (/\bcru/.test(f._n)) score -= 0.6; }
+    if (def && f.n === def) score += 100;
+    res.push({ f, score, cover: matched / q.length });
+  }
+  res.sort((a, b) => b.score - a.score);
+  return res.slice(0, limit);
+}
+const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 } });
+
+/* --- Open Food Facts (marques) --- */
+async function getJSON(url, ms = 10000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+function offFood(p) {
+  const n = p.nutriments || {};
+  const kcal = n['energy-kcal_100g'] != null ? n['energy-kcal_100g'] : (n['energy_100g'] != null ? n['energy_100g'] / 4.184 : null);
+  if (kcal == null || !p.code) return null;
+  const nom = p.product_name_fr || p.product_name || 'Produit sans nom';
+  const brand = Array.isArray(p.brands) ? p.brands.join(', ') : (p.brands || '');
+  return { id: 'o' + p.code, name: brand ? `${nom} — ${brand}` : nom, src: 'off', per100: { kcal: Math.round(kcal * 10) / 10, p: +n.proteins_100g || 0, g: +n.carbohydrates_100g || 0, l: +n.fat_100g || 0 } };
+}
+async function searchOFF(query, limit = 6) {
+  const q = encodeURIComponent(query);
+  const F = 'code,product_name,product_name_fr,brands,nutriments';
+  const tries = [
+    async () => (await getJSON(`https://search.openfoodfacts.org/search?q=${q}&langs=fr&page_size=${limit}&fields=${F}`)).hits,
+    async () => (await getJSON(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${q}&search_simple=1&action=process&json=1&lc=fr&page_size=${limit}&fields=${F}`)).products,
+  ];
+  let err = null;
+  for (const t of tries) {
+    try { return ((await t()) || []).map(offFood).filter(Boolean); } catch (e) { err = e; }
+  }
+  throw err || new Error('Open Food Facts injoignable');
+}
+
+/* --- lecture du texte libre : "150 g riz, 2 oeufs, yaourt Danone 125 g" --- */
+const PORTIONS = [
+  [/\boeuf/, 55], [/\bbanane/, 120], [/\bpomme\b/, 150], [/\borange/, 150], [/\bkiwi/, 75], [/\bclementine|\bmandarine/, 60],
+  [/\byaourt|\byogourt/, 125], [/\btranche.*jambon|\bjambon/, 40], [/\btranche/, 35], [/\bbaguette/, 250], [/\bcroissant/, 60],
+  [/\bpain au chocolat|\bchocolatine/, 70], [/\bbiscuit|\bgateau sec/, 10], [/\bcarre/, 5], [/\bcuillere a soupe|\bc a s\b|\bcas\b/, 15],
+  [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbol/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
+  [/\bsteak|\bburger|\bhamburger/, 125], [/\bavocat/, 150], [/\btomate/, 120], [/\bpart\b.*pizza|\bpizza/, 150], [/\bsandwich/, 250],
+  [/\bportion/, 30], [/\bcafe|\bthe\b/, 200],
+];
+const WORDNUM = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, demi: 0.5, 'demie': 0.5 };
+function parseFoodText(text) {
+  return text
+    .split(/\n|,|;|\+|\bet\b|\bavec\b/i)
+    .map(x => x.trim())
+    .filter(x => x.length > 1)
+    .map(chunk => {
+      const n = normTxt(chunk);
+      let grams = null, name = chunk;
+      const m = chunk.match(/(\d+(?:[.,]\d+)?)\s*(kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)\b/i);
+      if (m) {
+        const v = parseFloat(m[1].replace(',', '.'));
+        const u = m[2].toLowerCase();
+        grams = u.startsWith('k') ? v * 1000 : u === 'cl' ? v * 10 : (u === 'l' || u.startsWith('litre')) ? v * 1000 : v;
+        name = chunk.replace(m[0], ' ');
+      } else {
+        const c = n.match(/^(\d+(?:\.\d+)?|un|une|deux|trois|quatre|cinq|six|demi|demie)\b/);
+        const count = c ? (WORDNUM[c[1]] || parseFloat(c[1])) : 1;
+        const portion = PORTIONS.find(([re]) => re.test(n));
+        if (portion) grams = Math.round(count * portion[1]);
+        if (c) name = chunk.replace(new RegExp('^\\s*' + c[1].replace('.', '[.,]'), 'i'), ' ');
+      }
+      name = name.replace(/\b(de|d'|du|des)\s*$/i, '').replace(/^\s*(de|d'|du|des)\s+/i, '').replace(/\s+/g, ' ').trim();
+      return { text: chunk, query: name || chunk, grams: grams ? Math.round(grams) : null };
+    });
+}
+
+/* --- calculs --- */
+const macroOf = (food, grams) => {
+  const k = grams / 100;
+  return { kcal: Math.round(food.per100.kcal * k), p: Math.round(food.per100.p * k * 10) / 10, g: Math.round(food.per100.g * k * 10) / 10, l: Math.round(food.per100.l * k * 10) / 10 };
+};
+const fmtG = v => (Math.round(v * 10) / 10).toString().replace('.', ',');
+
+/* ---------- Carte "Nutrition du jour" (Accueil) ---------- */
+function macroBars(t, tg) {
+  const row = (lab, v, goal, unit, cls) => `
+    <div class="macro ${cls}">
+      <div class="macro-top"><span>${lab}</span><span><b>${fmtNum(v)}</b> / ${fmtNum(goal)} ${unit}</span></div>
+      <div class="bar thin"><span style="width:${Math.min(100, (v / goal) * 100)}%"></span></div>
+    </div>`;
+  return row('Protéines', t.p, tg.p, 'g', 'mp') + row('Glucides', t.g, tg.g, 'g', 'mg') + row('Lipides', t.l, tg.l, 'g', 'ml');
+}
+function kcalRing(eaten, target) {
+  const r = 46, c = 2 * Math.PI * r, f = Math.min(1, eaten / target);
+  const over = eaten > target;
+  return `
+    <svg class="kring ${over ? 'over' : ''}" viewBox="0 0 110 110" aria-hidden="true">
+      <circle cx="55" cy="55" r="${r}" class="kr-bg"/>
+      <circle cx="55" cy="55" r="${r}" class="kr-fg" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - f)).toFixed(1)}"/>
+    </svg>`;
+}
+function renderNutritionCard(today) {
+  const t = dayTotals(today), tg = nutritionTargets();
+  const left = tg.kcal - t.kcal;
+  return `
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Nutrition du jour</div><button class="btn small ghost" data-go="meals">Ouvrir ›</button></div>
+      <div class="nutri-top">
+        <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'restantes' : 'en trop'}</span></div></div>
+        <div class="nutri-macros">${macroBars(t, tg)}</div>
+      </div>
+      <div class="small faint" style="margin-top:8px">${fmtNum(t.kcal)} / ${fmtNum(tg.kcal)} kcal${tg.known ? '' : ' · objectif provisoire : renseigne ta taille et ton âge dans Réglages'}</div>
+      <button class="btn block" style="margin-top:12px" data-go="meals">🍽️ Ajouter ce que j'ai mangé</button>
+    </section>`;
+}
+
+/* ---------- Onglet Repas ---------- */
+function renderMeals() {
+  const today = todayKey();
+  const day = ui.mealDay || today;
+  const t = dayTotals(day), tg = nutritionTargets();
+  const left = tg.kcal - t.kcal;
+  const validated = nutritionDays(today).has(day);
+  const mealPhotos = photos.filter(p => p.kind === 'meal' && p.date === day);
+  return `
+    <section class="panel">
+      <div class="cal-head" style="margin-bottom:12px">
+        <button class="icon-btn" data-meal-day="-1" aria-label="Jour précédent">‹</button>
+        <div class="center"><div class="cal-month">${day === today ? "Aujourd'hui" : esc(fmtDayLong(day))}</div>
+          <div class="small muted">${validated ? '<span style="color:var(--good)">✓ Quête nutrition validée (+' + NUTRI_XP + ' XP)</span>' : day === today ? 'Quête : 3 repas, ≤ objectif, protéines ≥ 80 %' : 'Quête nutrition non validée'}</div></div>
+        <button class="icon-btn" data-meal-day="1" aria-label="Jour suivant" ${day >= today ? 'disabled style="opacity:.3"' : ''}>›</button>
+      </div>
+      <div class="nutri-top">
+        <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'kcal restantes' : 'kcal en trop'}</span></div></div>
+        <div class="nutri-macros">${macroBars(t, tg)}</div>
+      </div>
+      <div class="small faint" style="margin-top:8px">${fmtNum(t.kcal)} kcal mangées · objectif ${fmtNum(tg.kcal)} kcal${tg.auto ? ' (calculé pour perdre ≈ 0,5 kg/semaine)' : ''}</div>
+    </section>
+
+    ${MEALS.map(m => {
+      const items = state.meals.filter(x => x.date === day && x.meal === m.key).sort((a, b) => a.ts - b.ts);
+      const ph = mealPhotos.filter(p => p.meal === m.key);
+      const kc = items.reduce((s, x) => s + x.kcal, 0);
+      return `
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title">${m.icon} ${m.label}</div><div class="entry-xp" style="color:var(--neon-2)">${fmtNum(kc)} kcal</div></div>
+        ${ph.length ? `<div class="meal-photos">${ph.map(p => `<button type="button" class="ph" data-photo="${esc(p.id)}"><img src="${photoUrl(p)}" alt=""></button>`).join('')}</div>` : ''}
+        ${items.map(x => `
+          <div class="entry">
+            <div class="entry-body">
+              <div class="entry-title">${esc(x.name)}</div>
+              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' ? ' · 🏷️' : ''}</div>
+            </div>
+            <div class="entry-xp" style="color:var(--text)">${fmtNum(x.kcal)}</div>
+            <button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button>
+          </div>`).join('')}
+        <div class="btn-row" style="margin-top:${items.length || ph.length ? 10 : 0}px">
+          <button class="btn small" data-add-food="${m.key}">＋ Aliments</button>
+          <button class="btn small" data-meal-photo="${m.key}">📷 Photo</button>
+        </div>
+      </section>`;
+    }).join('')}
+  `;
+}
+
+/* ---------- Ajout d'aliments ---------- */
+function foodRowHtml(it, i) {
+  const opts = it.cands.map((c, j) => `<option value="${j}" ${j === it.sel ? 'selected' : ''}>${c.src === 'off' ? '🏷️ ' : ''}${esc(c.name)} · ${Math.round(c.per100.kcal)} kcal/100 g</option>`).join('');
+  const food = it.cands[it.sel];
+  const mac = food && it.grams ? macroOf(food, it.grams) : null;
+  return `
+    <div class="food-row" data-row="${i}">
+      <div class="food-q">“${esc(it.text)}”</div>
+      ${it.cands.length ? `<select class="input food-sel" data-sel="${i}">${opts}</select>` : `<div class="small decay-warn">${it.loading ? 'Recherche…' : 'Aucun aliment trouvé.'}</div>`}
+      <div class="food-line">
+        <input class="input food-g" data-grams="${i}" inputmode="decimal" placeholder="grammes" value="${it.grams || ''}">
+        <span class="food-mac">${mac ? `<b>${mac.kcal} kcal</b> · P ${fmtG(mac.p)} · G ${fmtG(mac.g)} · L ${fmtG(mac.l)}` : '<span class="decay-warn">Indique les grammes</span>'}</span>
+      </div>
+      <div class="food-actions">
+        <button type="button" class="btn small ghost" data-off="${i}">🏷️ Chercher la marque</button>
+        <button type="button" class="btn small ghost" data-rm="${i}">Retirer</button>
+      </div>
+    </div>`;
+}
+
+function openFoodSheet(meal) {
+  const ml = mealLabel(meal);
+  const day = ui.mealDay || todayKey();
+  let items = [];
+  openSheet({
+    tag: `[SYSTÈME] ${ml.label}`,
+    title: `${ml.icon} Qu'as-tu mangé ?`,
+    body: `
+      <label class="field"><span>Écris tout, avec les grammes. Pour un produit de marque, mets la marque.</span>
+        <textarea class="input" id="food-text" rows="3" placeholder="Ex : 150 g riz, 120 g poulet, 2 oeufs, yaourt Skyr Siggi's 150 g"></textarea>
+      </label>
+      <button type="button" class="btn primary block" data-analyse="1">🔍 Analyser</button>
+      <div id="food-rows"></div>
+      <div id="food-save" style="display:none;margin-top:12px">
+        <div class="small muted center" id="food-total"></div>
+        <button type="button" class="btn primary block" style="margin-top:8px" data-food-save="1">Ajouter au repas</button>
+      </div>
+      <p class="small faint">Valeurs : table Ciqual (ANSES) et Open Food Facts pour les marques (nécessite Internet).</p>`,
+    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+    onMount(sheet, close) {
+      const draw = () => {
+        $('#food-rows', sheet).innerHTML = items.map(foodRowHtml).join('');
+        const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
+        $('#food-save', sheet).style.display = items.length ? '' : 'none';
+        const tot = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
+        $('#food-total', sheet).textContent = `${ok.length} aliment${ok.length > 1 ? 's' : ''} · ${fmtNum(tot)} kcal`;
+      };
+      const searchBrand = async (it, auto = false) => {
+        if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche de marques demande Internet.', 'warn'); return; }
+        it.loading = true; draw();
+        try {
+          const res = await searchOFF(it.query);
+          if (res.length) { it.cands = [...res, ...it.cands.filter(c => c.src !== 'off')]; it.sel = 0; }
+          else if (!auto) toast('Marque introuvable', 'Essaie avec le nom exact du produit.', 'warn');
+        } catch (e) {
+          if (!auto) toast('Recherche impossible', 'Open Food Facts ne répond pas.', 'warn');
+        }
+        it.loading = false;
+        if (sheet.isConnected) draw();
+      };
+      sheet.addEventListener('click', async e => {
+        if (e.target.closest('[data-analyse]')) {
+          const txt = $('#food-text', sheet).value.trim();
+          if (!txt) { toast('Rien à analyser', 'Écris ce que tu as mangé.', 'warn'); return; }
+          try { await loadCiqual(); } catch (_) { toast('Base aliments indisponible', 'Réessaie avec Internet.', 'warn'); return; }
+          const parsed = parseFoodText(txt);
+          const fresh = parsed.map(p => {
+            const r = searchCiqual(p.query);
+            return { ...p, cands: r.map(x => ciqualFood(x.f)), sel: 0, cover: r.length ? r[0].cover : 0 };
+          });
+          items = items.concat(fresh);
+          $('#food-text', sheet).value = '';
+          draw();
+          // produit probablement de marque (mots inconnus de la base) → recherche automatique
+          fresh.filter(it => it.cover < 1 || !it.cands.length).forEach(it => searchBrand(it, true));
+          return;
+        }
+        const off = e.target.closest('[data-off]');
+        if (off) { searchBrand(items[+off.dataset.off]); return; }
+        const rm = e.target.closest('[data-rm]');
+        if (rm) { items.splice(+rm.dataset.rm, 1); draw(); return; }
+        if (e.target.closest('[data-food-save]')) {
+          const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
+          if (!ok.length) { toast('Rien à ajouter', 'Indique au moins un aliment avec ses grammes.', 'warn'); return; }
+          const now = Date.now();
+          ok.forEach((it, k) => {
+            const f = it.cands[it.sel];
+            state.meals.push({ id: uid(), date: day, meal, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
+          });
+          save();
+          close(null);
+          render();
+          const kc = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
+          const t = dayTotals(day), tg = nutritionTargets();
+          toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - t.kcal)} kcal aujourd'hui`);
+        }
+      });
+      sheet.addEventListener('change', e => {
+        const s = e.target.closest('[data-sel]');
+        if (s) { items[+s.dataset.sel].sel = +s.value; draw(); }
+        const g = e.target.closest('[data-grams]');
+        if (g) { const v = parseFloat(g.value.replace(',', '.')); items[+g.dataset.grams].grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; draw(); }
+      });
+    },
+  });
+}
+
+async function deleteFood(id) {
+  const x = state.meals.find(m => m.id === id);
+  if (!x) return;
+  if (!(await confirmBox('Retirer cet aliment ?', `${esc(x.name)} — ${fmtNum(x.kcal)} kcal`, 'Retirer', true))) return;
+  state.meals = state.meals.filter(m => m.id !== id);
+  save();
+  render();
+}
 
 /* =========================================================
    Onglet 2 : Aujourd'hui
@@ -1066,6 +1543,23 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Profil physique</div></div>
+      <p class="small muted" style="margin-top:0">Sert à calculer ton objectif de calories et ton taux de graisse. Laisse vide ce que tu ne sais pas.</p>
+      <div class="btn-row">
+        <label class="field"><span>Taille (cm)</span><input class="input" data-body="heightCm" data-min="120" data-max="230" inputmode="decimal" value="${state.body.heightCm || ''}" placeholder="ex. 178"></label>
+        <label class="field"><span>Âge</span><input class="input" data-body="age" data-min="10" data-max="100" inputmode="numeric" value="${state.body.age || ''}" placeholder="ex. 24"></label>
+      </div>
+      <div class="btn-row">
+        <label class="field"><span>Tour de taille (cm, au nombril)</span><input class="input" data-body="waistCm" data-min="50" data-max="200" inputmode="decimal" value="${state.body.waistCm || ''}" placeholder="facultatif"></label>
+        <label class="field"><span>Tour de cou (cm)</span><input class="input" data-body="neckCm" data-min="25" data-max="70" inputmode="decimal" value="${state.body.neckCm || ''}" placeholder="facultatif"></label>
+      </div>
+      <div class="btn-row">
+        <label class="field" style="margin-bottom:0"><span>Graisse au départ (%)</span><input class="input" data-body="fatStart" data-min="5" data-max="60" inputmode="decimal" value="${fmtG(state.body.fatStart)}"></label>
+        <label class="field" style="margin-bottom:0"><span>Objectif kcal (vide = auto)</span><input class="input" data-body="kcalTarget" data-min="1000" data-max="6000" inputmode="numeric" value="${state.body.kcalTarget || ''}" placeholder="${fmtNum(nutritionTargets().kcal)}"></label>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><div class="panel-title">Sauvegarde</div></div>
       <p class="small muted" style="margin-top:0">Tes données sont dans ce téléphone. Exporte régulièrement un fichier (dans "Fichiers" ou iCloud Drive) pour ne jamais rien perdre.</p>
       <p class="small faint">Dernier export : ${lastExp ? `${lastExp.toLocaleDateString('fr-FR')} à ${lastExp.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : 'jamais'}</p>
@@ -1095,8 +1589,10 @@ function renderSettings() {
         <summary>Comment fonctionne le Système ?</summary>
         <ul>
           <li><b>XP</b> : 1 XP par minute (max 4 h par entrée). "Fait" sans durée = ${RULES.doneXp} XP. Facile ×0,8 · Intense ×1,3.</li>
-          <li><b>Niveau</b> : chaque niveau demande plus d'XP que le précédent.</li>
+          <li><b>Niveau</b> : chaque niveau demande plus d'XP que le précédent. Comme dans la vraie vie, ça prend du temps : avec ~2 h d'activité par jour, rang D ≈ 3 mois, C ≈ 1 an, B ≈ 3 ans, A ≈ 6 ans, S ≈ 12 ans.</li>
           <li><b>Rang</b> : E (niv. 1) → D (10) → C (20) → B (35) → A (50) → S (70).</li>
+          <li><b>Nutrition</b> : une journée terminée avec 3 repas notés, calories entre objectif −400 et objectif +100, et protéines ≥ 80 % = +${NUTRI_XP} XP et +1 point de Discipline.</li>
+          <li><b>Corps</b> : l'hologramme ne s'affine qu'avec ton vrai poids. Perte réaliste : 0,5 à 1 kg par semaine.</li>
           <li><b>Stats</b> (sur 100, départ à 10) : elles montent un peu chaque jour où tu travailles le domaine. Plus une stat est haute, plus elle monte lentement. En faire 6 h d'un coup n'apporte presque pas plus que 2 h : la régularité paie.</li>
           <li><b>Discipline</b> : gagne aussi un petit bonus chaque jour où tu fais au moins une activité.</li>
           <li><b>Baisse</b> : après ${RULES.decayGraceDays} jours sans rien dans un domaine, la stat baisse légèrement chaque jour.</li>
@@ -1190,7 +1686,7 @@ async function exportSave() {
   const now = new Date();
   let photoData = [];
   try {
-    photoData = await Promise.all(photos.map(async p => ({ id: p.id, date: p.date, ts: p.ts, pose: p.pose, kg: p.kg, image: await blobToDataUrl(p.blob) })));
+    photoData = await Promise.all(photos.map(async p => ({ id: p.id, kind: p.kind || 'body', meal: p.meal, date: p.date, ts: p.ts, pose: p.pose, kg: p.kg, image: await blobToDataUrl(p.blob) })));
   } catch (e) { console.warn('Photos non exportées', e); }
   const payload = { app: 'mon-systeme', appVersion: APP_VERSION, exportedAt: now.toISOString(), data: { ...state, lastExportAt: now.toISOString() }, photos: photoData };
   const json = JSON.stringify(payload, null, 2);
@@ -1240,7 +1736,7 @@ function importSave(file) {
         photos = [];
         for (const p of inPhotos) {
           try {
-            const rec = { id: typeof p.id === 'string' ? p.id : uid(), date: p.date, ts: +p.ts || Date.now(), pose: POSES.some(x => x.key === p.pose) ? p.pose : 'face', kg: +p.kg || next.body.startWeight, blob: await dataUrlToBlob(p.image) };
+            const rec = { id: typeof p.id === 'string' ? p.id : uid(), kind: p.kind === 'meal' ? 'meal' : 'body', meal: MEAL_KEYS.includes(p.meal) ? p.meal : 'midi', date: p.date, ts: +p.ts || Date.now(), pose: POSES.some(x => x.key === p.pose) ? p.pose : 'face', kg: +p.kg || next.body.startWeight, blob: await dataUrlToBlob(p.image) };
             await PhotoDB.put(rec);
             photos.push(rec);
           } catch (e) { console.warn('Photo non importée', e); }
@@ -1310,6 +1806,17 @@ document.addEventListener('click', e => {
     return render();
   }
 
+  const md = t.closest('#view [data-meal-day]');
+  if (md && !md.disabled) { ui.mealDay = addDays(ui.mealDay || todayKey(), +md.dataset.mealDay); if (ui.mealDay >= todayKey()) ui.mealDay = null; return render(); }
+  const af = t.closest('#view [data-add-food]');
+  if (af) { loadCiqual().catch(() => {}); return openFoodSheet(af.dataset.addFood); }
+  const mp = t.closest('#view [data-meal-photo]');
+  if (mp) { photoTarget = { kind: 'meal', meal: mp.dataset.mealPhoto, date: ui.mealDay || todayKey() }; return $('#photo-file').click(); }
+  const dfo = t.closest('#view [data-del-food]');
+  if (dfo) return deleteFood(dfo.dataset.delFood);
+  const vph = t.closest('#view [data-photo]');
+  if (vph) return openPhotoViewer(vph.dataset.photo);
+
   const hm = t.closest('#view [data-holo-mode]');
   if (hm) { ui.holoMode = hm.dataset.holoMode; return render(); }
 
@@ -1342,6 +1849,19 @@ document.addEventListener('change', e => {
     save();
     e.target.value = fmtKg(kg);
     toast('Objectif mis à jour', `${fmtKg(state.body.startWeight)} kg → ${fmtKg(state.body.goalWeight)} kg`);
+  }
+  if (e.target.dataset && e.target.dataset.body) {
+    const key = e.target.dataset.body, raw = e.target.value.trim();
+    if (!raw && key !== 'fatStart') { state.body[key] = null; save(); toast('Profil mis à jour'); return; }
+    const v = parseFloat(raw.replace(',', '.'));
+    if (!Number.isFinite(v) || v < +e.target.dataset.min || v > +e.target.dataset.max) {
+      toast('Valeur invalide', `Entre ${e.target.dataset.min} et ${e.target.dataset.max}.`, 'warn');
+      e.target.value = state.body[key] || '';
+      return;
+    }
+    state.body[key] = Math.round(v * 10) / 10;
+    save();
+    toast('Profil mis à jour', key === 'kcalTarget' || key === 'heightCm' || key === 'age' ? `Objectif : ${fmtNum(nutritionTargets().kcal)} kcal/jour` : '');
   }
   if (e.target.id === 'photo-file' && e.target.files && e.target.files.length) {
     addPhotos([...e.target.files]);

@@ -1,7 +1,8 @@
 # Mon Système
 
 Application personnelle style "Système" (Solo Leveling) : niveau, rang E→S, 5 stats
-réalistes, série de jours actifs, quêtes du jour, historique, sauvegarde JSON.
+réalistes, série de jours actifs, quêtes du jour, scan corporel 3D (poids, graisse,
+muscles), repas et nutrition (Ciqual + Open Food Facts), historique, sauvegarde JSON.
 
 PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 (Safari → Partager → « Sur l'écran d'accueil ») et utilisable hors connexion.
@@ -14,7 +15,9 @@ PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 | `style.css` | Apparence (couleurs en haut du fichier) |
 | `app.js` | Toute la logique : règles des stats (`RULES`), activités par défaut, écrans |
 | `holo.js` | Hologramme 3D du corps (three.js) : rotation, rayures, affinage vers l'objectif |
-| `assets/corps.bin` | Modèle 3D du corps (format compact) |
+| `assets/corps.bin` | Modèle 3D du corps (format compact), ajusté aux photos |
+| `tools/ajuster_corps.py` | Recrée `corps.bin` à partir de `tools/avatar-source.glb` avec les proportions mesurées sur les photos |
+| `data/ciqual.json` | Table Ciqual 2020 (ANSES) : 3 092 aliments, valeurs pour 100 g |
 | `vendor/three.module.min.js` | Moteur 3D three.js (licence MIT, `vendor/three-LICENSE.txt`) |
 | `sw.js` | Service worker : hors connexion + mises à jour |
 | `manifest.webmanifest`, `icons/` | Installation sur l'écran d'accueil |
