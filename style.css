@@ -1237,3 +1237,27 @@ body {
 .field.toggle input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #9bb6c8; transition: transform .2s, background .2s; }
 .field.toggle input:checked { background: rgba(56, 200, 255, .45); border-color: var(--neon); box-shadow: 0 0 12px rgba(56, 200, 255, .5); }
 .field.toggle input:checked::after { transform: translateX(22px); background: #fff; }
+
+/* ---------- Ce que j'ai mal fait ---------- */
+.bad-panel { border-color: rgba(255, 77, 109, .45); box-shadow: inset 0 0 22px rgba(255, 77, 109, .06), 0 10px 30px rgba(0, 0, 0, .45), 0 0 24px rgba(255, 77, 109, .14); }
+.bad-panel .panel-title { color: #ffc0cb; text-shadow: 0 0 8px rgba(255, 77, 109, .8), 0 0 18px rgba(255, 77, 109, .35); }
+.bad-panel::before { border-color: #ff4d6d; filter: drop-shadow(0 0 4px #ff4d6d); }
+.activity-btn.bad { border-color: rgba(255, 77, 109, .38); background: linear-gradient(160deg, rgba(255, 77, 109, .16), rgba(30, 6, 16, .85)); box-shadow: 0 0 16px rgba(255, 77, 109, .1); }
+.activity-btn.bad .activity-stats { color: #ff9aac; }
+.activity-btn.bad .ab-shine { background: linear-gradient(115deg, transparent 30%, rgba(255, 140, 160, .2) 45%, transparent 60%); background-size: 250% 100%; }
+.activity-btn.bad:active { box-shadow: 0 0 30px rgba(255, 77, 109, .8), inset 0 0 20px rgba(255, 77, 109, .4); border-color: #ffc0cb; }
+.activity-btn.add.bad { color: #ff9aac; background: transparent; }
+.entry.bad .entry-xp { color: #ff7d94; text-shadow: 0 0 8px rgba(255, 77, 109, .6); }
+.entry.bad .entry-title { color: #ffd6dd; }
+.entry.bad .entry-meta { color: #ff9aac; }
+.entry.bad.fresh { animation: freshBad 1.6s ease; }
+@keyframes freshBad { 0% { background: rgba(255, 77, 109, .35); box-shadow: 0 0 24px rgba(255, 77, 109, .6); transform: translateX(12px); } 100% { background: transparent; box-shadow: none; transform: none; } }
+.day-xp.neg { color: #ff7d94; text-shadow: 0 0 10px rgba(255, 77, 109, .7); }
+.sheet.sheet-bad { border-color: rgba(255, 77, 109, .8); box-shadow: 0 -10px 40px rgba(255, 77, 109, .3); }
+.sheet.sheet-bad .sheet-tag { color: #ff7d94; }
+.xp-orb.neg { background: radial-gradient(circle, rgba(255, 120, 140, .95), rgba(160, 20, 50, .7)); box-shadow: 0 0 20px #ff4d6d, 0 0 40px #ff4d6d; }
+.qw-prog.max { background: linear-gradient(90deg, #ffb04a, #ff4d6d); box-shadow: 0 0 8px #ff4d6d; }
+.qw-goal:not(.done) .qw-prog.max { opacity: 1; }
+.qw-goal.over { border-color: rgba(255, 77, 109, .75); background: rgba(255, 77, 109, .1); animation: cascIn .5s both, alarm 1.6s ease-in-out .6s infinite; }
+.qw-goal.over .qw-val { color: #ff9aac; }
+.qw-goal.over .qw-check { color: #fff; background: #c0203f; border-color: #ff4d6d; box-shadow: 0 0 12px #ff4d6d; }

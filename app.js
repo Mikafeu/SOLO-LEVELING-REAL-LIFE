@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -62,6 +62,16 @@ const RANKS = [
   { letter: 'S', minLevel: 70, title: 'Charisme de rang S' },
 ];
 
+/* Ce que j'ai mal fait : retire de l'XP et fait baisser les stats concernées */
+const DEFAULT_BAD = [
+  { id: 'b-reseaux', name: 'TikTok / réseaux', icon: '📱', stats: ['concentration', 'discipline'] },
+  { id: 'b-jeux', name: 'Jeux vidéo', icon: '🎮', stats: ['discipline', 'concentration'] },
+  { id: 'b-series', name: 'Séries / YouTube', icon: '📺', stats: ['concentration', 'discipline'] },
+  { id: 'b-procra', name: 'Procrastination', icon: '🛋️', stats: ['discipline'] },
+  { id: 'b-malbouffe', name: 'Malbouffe', icon: '🍔', stats: ['physique', 'discipline'] },
+  { id: 'b-tard', name: 'Couché tard', icon: '🌙', stats: ['physique', 'concentration'] },
+  { id: 'b-soiree', name: 'Soirée / alcool', icon: '🍺', stats: ['physique', 'discipline'] },
+];
 const DEFAULT_ACTIVITIES = [
   { id: 'live', name: 'Live (Twitch/TikTok)', icon: '🎥', stats: ['concentration', 'discipline'], difficulty: 'normal' },
   { id: 'clips', name: 'Clips / montage', icon: '✂️', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
@@ -113,13 +123,14 @@ function freshState() {
     startDate: DEFAULT_START,
     lastExportAt: null,
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
+    badActivities: DEFAULT_BAD.map(a => ({ ...a, stats: [...a.stats], u: 0 })),
     logs: [],
     body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: 185, age: 21, sex: 'h', waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
     weights: [],
     meals: [],
     journals: [],
     bilans: [],       // saisie du jour : ce que j'ai accompli / ce qui m'a fait perdre du temps
-    questCfg: { sport: 30, focus: 60, meals: 3, bilan: true },
+    questCfg: { sport: 30, focus: 60, meals: 3, bilan: true, waste: 60 },
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -159,6 +170,12 @@ function sanitizeState(raw) {
       difficulty: DIFFICULTIES.some(d => d.key === a.difficulty) ? a.difficulty : 'normal',
       u: Number.isFinite(a.u) ? a.u : 0,
     }));
+  if (Array.isArray(raw.badActivities)) {
+    s.badActivities = raw.badActivities.filter(a => a && typeof a.name === 'string').map(a => ({
+      id: typeof a.id === 'string' && a.id ? a.id : uid(), name: a.name.slice(0, 40),
+      icon: typeof a.icon === 'string' && a.icon ? a.icon.slice(0, 8) : '⛔', stats: migrateStats(a.stats), u: Number.isFinite(a.u) ? a.u : 0,
+    }));
+  }
   s.logs = raw.logs
     .filter(l => l && isValidKey(l.date))
     .map(l => ({
@@ -172,7 +189,8 @@ function sanitizeState(raw) {
       note: typeof l.note === 'string' ? l.note.slice(0, 280) : '',
       stats: migrateStats(l.stats),
       difficulty: DIFFICULTIES.some(d => d.key === l.difficulty) ? l.difficulty : 'normal',
-      xp: Number.isFinite(l.xp) && l.xp >= 0 ? Math.round(l.xp) : 0,
+      bad: l.bad === true,
+      xp: Number.isFinite(l.xp) && (l.bad === true ? l.xp <= 0 : l.xp >= 0) ? Math.round(l.xp) : 0,
       quality: Number.isFinite(l.quality) && l.quality >= 0.3 && l.quality <= 2 ? l.quality : 1,
       verdict: typeof l.verdict === 'string' ? l.verdict.slice(0, 160) : '',
     }));
@@ -216,7 +234,7 @@ function sanitizeState(raw) {
     const q = raw.questCfg;
     s.questCfg = {
       sport: inR(q.sport, 0, 600) ? q.sport : 30, focus: inR(q.focus, 0, 900) ? q.focus : 60,
-      meals: inR(q.meals, 0, 4) ? q.meals : 3, bilan: q.bilan !== false,
+      meals: inR(q.meals, 0, 4) ? q.meals : 3, bilan: q.bilan !== false, waste: inR(q.waste, 0, 600) ? q.waste : 60,
     };
   }
   s.journals = (Array.isArray(raw.journals) ? raw.journals : [])
@@ -309,15 +327,19 @@ function computeStats(logs, today) {
 
   const byDay = new Map();
   let first = today;
+  const goodDays = new Set();
   for (const l of logs) {
     if (l.date > today) continue;
     if (l.date < first) first = l.date;
     const o = byDay.get(l.date) || {};
-    const pts = entryPoints(l);
+    // ce que j'ai mal fait compte en négatif, et plus lourd (×1,25)
+    const pts = entryPoints(l) * (l.bad ? -BAD_WEIGHT : 1);
     for (const k of l.stats) o[k] = (o[k] || 0) + pts;
     byDay.set(l.date, o);
+    if (!l.bad) goodDays.add(l.date);
   }
-  for (const o of byDay.values()) o.discipline = (o.discipline || 0) + RULES.regularityBonus;
+  // bonus de régularité : seulement les jours où le bien l'emporte (pas de bonus gratuit)
+  for (const [d, o] of byDay) if (goodDays.has(d) && Object.values(o).reduce((a, v) => a + v, 0) >= 0) o.discipline = (o.discipline || 0) + RULES.regularityBonus;
   // journée de nutrition validée = 1 point de Discipline
   for (const d of nd) {
     const o = byDay.get(d) || {};
@@ -388,7 +410,7 @@ function computeStats(logs, today) {
 const powerOf = v => STAT_KEYS.reduce((s, k) => s + v[k], 0) / STAT_KEYS.length;
 
 function activeDays() {
-  return new Set(state.logs.map(l => l.date));
+  return new Set(state.logs.filter(l => !l.bad).map(l => l.date));
 }
 function streakInfo(today) {
   const days = activeDays();
@@ -423,13 +445,13 @@ function toast(msg, sub = '', kind = 'info') {
 }
 
 /* Fenêtre générique. buttons: [{label, value, cls}] → renvoie une promesse */
-function openSheet({ tag = '[SYSTÈME]', title = '', body = '', buttons = [], center = false, onMount = null }) {
+function openSheet({ tag = '[SYSTÈME]', title = '', body = '', buttons = [], center = false, onMount = null, cls = '' }) {
   return new Promise(resolve => {
     const root = $('#modal-root');
     const ov = document.createElement('div');
     ov.className = 'overlay' + (center ? ' center' : '');
     ov.innerHTML = `
-      <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet ${cls}" role="dialog" aria-modal="true">
         ${center ? '' : '<div class="sheet-grab"></div>'}
         <div class="sheet-tag">${esc(tag)}</div>
         ${title ? `<div class="sheet-title">${esc(title)}</div>` : ''}
@@ -701,7 +723,7 @@ function renderHome() {
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Statistiques</div><button class="btn small ghost" data-go="stats">📈 Détails ›</button></div>
       ${statsHtml}
-      <button type="button" class="btn block" style="margin-top:12px" data-goto-bilan="1">⚖️ ${state.bilans.some(x => x.date === today) ? 'Voir mon bilan du jour' : 'Saisir ma journée'}</button>
+      <button type="button" class="btn block" style="margin-top:12px" data-goto-bilan="1">⚔ Ce que j'ai accompli / mal fait aujourd'hui</button>
     </section>
 
     ${renderProgression(prog, started, st)}
@@ -811,9 +833,7 @@ function renderStatsTab() {
       <div class="panel-head"><div class="panel-title">Graphique</div><button type="button" class="btn small" data-landscape="1">⟲ Paysage</button></div>
       ${renderChart(st, today, { maxJ: 45, maxM: 12 })}
       <p class="small faint" style="margin-bottom:0">Tourne ton téléphone ou touche « Paysage » pour voir le graphique en grand.</p>
-    </section>
-
-    ${renderBilanPanel(today)}`;
+    </section>`;
 }
 
 /* Vue paysage plein écran (fonctionne même si la rotation de l'écran est bloquée) */
@@ -2165,14 +2185,14 @@ function saveBilan() {
    et −2 points de Discipline ce jour-là.
    ========================================================= */
 const QUEST_XP = 100, QUEST_PENALTY_XP = 50;
-const isPhysical = l => l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name));
-const isFocus = l => ['live', 'clips', 'lecture'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l));
+const isPhysical = l => !l.bad && (l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name)));
+const isFocus = l => !l.bad && (['live', 'clips', 'lecture'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l)));
 function questIndex() {
   const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0);
   if (questIndex._k === key) return questIndex._v;
   const byDate = new Map();
-  const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
-  for (const l of state.logs) { const o = get(l.date); if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30; }
+  const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, waste: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
+  for (const l of state.logs) { const o = get(l.date); if (l.bad) o.waste += l.minutes || 30; else if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30; }
   for (const m of state.meals) get(m.date).meals.add(m.meal);
   for (const b of state.bilans) get(b.date).bilan = true;
   questIndex._k = key; questIndex._v = byDate;
@@ -2180,14 +2200,14 @@ function questIndex() {
 }
 function dailyQuest(date) {
   const cfg = state.questCfg;
-  const o = questIndex().get(date) || { phys: 0, focus: 0, meals: new Set(), bilan: false };
+  const o = questIndex().get(date) || { phys: 0, focus: 0, waste: 0, meals: new Set(), bilan: false };
   const main = ['matin', 'midi', 'soir'].filter(k => o.meals.has(k)).length;
   const goals = [];
   if (cfg.sport > 0) goals.push({ key: 'sport', icon: '🏋️', label: 'Entraînement physique', cur: o.phys, target: cfg.sport, unit: 'min' });
   if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
   if (cfg.meals > 0) goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
-  if (cfg.bilan) goals.push({ key: 'bilan', icon: '⚖️', label: 'Bilan du jour saisi', cur: o.bilan ? 1 : 0, target: 1, unit: '' });
-  goals.forEach(g => { g.done = g.cur >= g.target; });
+  if (cfg.bilan) goals.push({ key: 'waste', icon: '⛔', label: 'Temps perdu limité', hint: 'déclaré dans « mal fait »', cur: o.waste, target: cfg.waste, unit: 'min', max: true });
+  goals.forEach(g => { g.done = g.max ? g.cur <= g.target : g.cur >= g.target; });
   return { goals, done: goals.length > 0 && goals.every(g => g.done), count: goals.filter(g => g.done).length };
 }
 /* jours passés (depuis le jour 0) : accomplis / ratés */
@@ -2213,8 +2233,8 @@ function flyXp(fromRect, xp) {
   if (!fromRect || !target) return Promise.resolve();
   const tr = target.getBoundingClientRect();
   const orb = document.createElement('div');
-  orb.className = 'xp-orb';
-  orb.textContent = `+${xp} XP`;
+  orb.className = 'xp-orb' + (xp < 0 ? ' neg' : '');
+  orb.textContent = `${xp < 0 ? '−' : '+'}${Math.abs(xp)} XP`;
   const x0 = fromRect.left + fromRect.width / 2, y0 = fromRect.top + fromRect.height / 2;
   const x1 = tr.left + tr.width * 0.6, y1 = tr.top + tr.height / 2;
   orb.style.left = x0 + 'px'; orb.style.top = y0 + 'px';
@@ -2256,12 +2276,12 @@ function renderQuestWindow(today) {
       <div class="qw-sub">Préparation pour devenir plus fort</div>
       <div class="qw-goals">
         ${q.goals.map((g, i) => `
-          <div class="qw-goal casc ${g.done ? 'done' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''}" style="--j:${i}">
+          <div class="qw-goal casc ${g.done ? 'done' : ''} ${g.max && !g.done ? 'over' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''}" style="--j:${i}">
             <span class="qw-ico">${g.icon}</span>
             <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}</span>
-            <b class="qw-val">${g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
-            <i class="qw-check" aria-hidden="true">✓</i>
-            <em class="qw-prog" style="width:${Math.min(100, (g.cur / g.target) * 100)}%"></em>
+            <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
+            <i class="qw-check" aria-hidden="true">${g.max && !g.done ? '✕' : '✓'}</i>
+            <em class="qw-prog ${g.max ? 'max' : ''}" style="width:${g.max ? Math.min(100, (g.cur / Math.max(1, g.target)) * 100) : Math.min(100, (g.cur / g.target) * 100)}%"></em>
           </div>`).join('')}
       </div>
       <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE · +${QUEST_XP} XP obtenus` : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
@@ -2273,9 +2293,9 @@ function renderQuestWindow(today) {
    Onglet 2 : Aujourd'hui
    ========================================================= */
 function entryHtml(l, withDelete = true) {
-  const meta = [l.minutes ? fmtMinutes(l.minutes) : 'Fait ✓', l.stats.map(k => statByKey[k].name).join(' · ')].filter(Boolean).join(' — ');
+  const meta = [l.minutes ? fmtMinutes(l.minutes) : (l.bad ? '1 fois' : 'Fait ✓'), (l.bad ? '▼ ' : '') + l.stats.map(k => statByKey[k].name).join(' · ')].filter(Boolean).join(' — ');
   return `
-    <div class="entry ${l.id === ui.lastLogId ? 'fresh' : ''} ${l.quality > 1.05 ? 'q-up' : l.quality < 0.95 ? 'q-down' : ''}">
+    <div class="entry ${l.bad ? 'bad' : ''} ${l.id === ui.lastLogId ? 'fresh' : ''} ${l.quality > 1.05 ? 'q-up' : l.quality < 0.95 ? 'q-down' : ''}">
       <div class="entry-emoji">${esc(l.icon)}</div>
       <div class="entry-body">
         <div class="entry-title">${esc(l.name)}</div>
@@ -2283,7 +2303,7 @@ function entryHtml(l, withDelete = true) {
         ${l.note ? `<div class="entry-note">“${esc(l.note)}”</div>` : ''}
         ${l.verdict ? `<div class="entry-verdict">⚖️ ${esc(l.verdict)}</div>` : ''}
       </div>
-      <div class="entry-xp">+${l.xp} XP</div>
+      <div class="entry-xp">${l.xp >= 0 ? '+' : '−'}${Math.abs(l.xp)} XP</div>
       ${withDelete ? `<button class="icon-btn danger" data-del-log="${esc(l.id)}" aria-label="Supprimer">✕</button>` : ''}
     </div>`;
 }
@@ -2292,6 +2312,16 @@ function renderToday() {
   const today = todayKey();
   const logs = state.logs.filter(l => l.date === today).sort((a, b) => b.ts - a.ts);
   const xpDay = logs.reduce((s, l) => s + l.xp, 0);
+  const nGood = logs.filter(l => !l.bad).length, nBad = logs.length - nGood;
+  const wasted = logs.filter(l => l.bad).reduce((t, l) => t + (l.minutes || 30), 0);
+  const badGrid = state.badActivities.map(a => `
+    <button class="activity-btn bad" data-log-bad="${esc(a.id)}"><span class="ab-shine" aria-hidden="true"></span>
+      <span class="activity-emoji">${esc(a.icon)}</span>
+      <span>
+        <span class="activity-name">${esc(a.name)}</span><br>
+        <span class="activity-stats">▼ ${a.stats.length ? a.stats.map(k => statByKey[k].name).join(' + ') : 'Discipline'}</span>
+      </span>
+    </button>`).join('');
 
   const grid = state.activities.map(a => `
     <button class="activity-btn" data-log-activity="${esc(a.id)}"><span class="ab-shine" aria-hidden="true"></span>
@@ -2308,9 +2338,9 @@ function renderToday() {
       <div class="day-summary">
         <div>
           <div class="date-glow big">${esc(fmtDayLong(today))}</div>
-          <div class="small muted" style="margin-top:4px">${logs.length} quête${logs.length > 1 ? 's' : ''} accomplie${logs.length > 1 ? 's' : ''}</div>
+          <div class="small muted" style="margin-top:4px">${nGood} accomplie${nGood > 1 ? 's' : ''} · <span class="${nBad ? 'trend-down' : ''}">${nBad} mal fait${nBad > 1 ? 's' : ''}${wasted ? ` (${fmtMinutes(wasted)} perdues)` : ''}</span></div>
         </div>
-        <div class="day-xp">+${fmtNum(xpDay)} XP</div>
+        <div class="day-xp ${xpDay < 0 ? 'neg' : ''}">${xpDay >= 0 ? '+' : '−'}${fmtNum(Math.abs(xpDay))} XP</div>
       </div>
     </section>
 
@@ -2322,30 +2352,39 @@ function renderToday() {
       </div>
     </section>
 
+    <section class="panel bad-panel" id="bad-panel">
+      <div class="panel-head"><div class="panel-title">Qu'as-tu mal fait ?</div></div>
+      <p class="small muted" style="margin:-4px 0 12px">Sois honnête : chaque minute perdue retire de l'XP et fait baisser les stats concernées.</p>
+      <div class="activity-grid">
+        ${badGrid}
+        <button class="activity-btn add bad" data-new-bad="1">＋ Autre</button>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Journal du jour</div></div>
-      ${logs.length ? logs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>Aucune quête aujourd'hui. Choisis une activité au-dessus.</div>`}
+      ${logs.length ? logs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>Rien aujourd'hui. Choisis ce que tu as accompli ou mal fait au-dessus.</div>`}
     </section>
   `;
 }
 
 /* Feuille d'enregistrement : choix de la durée = validation directe */
-function openLogSheet(activity) {
+function openLogSheet(activity, bad = false) {
   const durations = [15, 30, 45, 60, 90, 120, 180, 240];
   let dayChoice = 'today';
   const body = `
-    <div class="small muted" style="margin:-8px 0 14px">${activity.stats.length ? 'Fait monter : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') : "Ne fait monter aucune stat (modifiable dans Réglages)"}</div>
+    <div class="small ${bad ? 'trend-down' : 'muted'}" style="margin:-8px 0 14px">${bad ? '▼ Fait baisser : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') + ' · retire de l’XP' : activity.stats.length ? 'Fait monter : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') : "Ne fait monter aucune stat (modifiable dans Réglages)"}</div>
     <div class="seg" style="margin-bottom:14px">
       <button type="button" class="on" data-day="today">Aujourd'hui</button>
       <button type="button" data-day="yesterday">Hier</button>
     </div>
-    <label class="field"><span>Note : le Système la lit et juge la qualité de ta séance</span>
-      <input class="input" id="log-note" maxlength="280" placeholder="Ex : séance intense, record au développé couché" autocomplete="off">
+    <label class="field"><span>${bad ? 'Petite note (facultatif)' : 'Note : le Système la lit et juge la qualité de ta séance'}</span>
+      <input class="input" id="log-note" maxlength="280" placeholder="${bad ? 'Ex : scrollé au lit avant de dormir' : 'Ex : séance intense, record au développé couché'}" autocomplete="off">
     </label>
     <div class="field"><span>Durée — touche pour valider</span></div>
     <div class="dur-grid">
       ${durations.map(m => `<button type="button" class="btn" data-dur="${m}">${fmtMinutes(m)}</button>`).join('')}
-      <button type="button" class="btn primary" data-dur="0">Fait ✓</button>
+      <button type="button" class="btn ${bad ? 'danger' : 'primary'}" data-dur="0">${bad ? '1 fois' : 'Fait ✓'}</button>
     </div>
     <div class="or-sep">AUTRE DURÉE</div>
     <div class="btn-row">
@@ -2354,8 +2393,9 @@ function openLogSheet(activity) {
     </div>`;
 
   openSheet({
-    tag: '[SYSTÈME] Nouvelle quête',
+    tag: bad ? '[SYSTÈME] Temps perdu' : '[SYSTÈME] Nouvelle quête',
     title: `${activity.icon} ${activity.name}`,
+    cls: bad ? 'sheet-bad' : '',
     body,
     buttons: [{ label: 'Annuler', value: null, cls: 'ghost' }],
     onMount(sheet, close) {
@@ -2381,13 +2421,14 @@ function openLogSheet(activity) {
         const note = $('#log-note', sheet).value.trim();
         const date = dayChoice === 'yesterday' ? addDays(todayKey(), -1) : todayKey();
         close(null);
-        addLog(activity, minutes, note, date);
+        addLog(activity, minutes, note, date, bad);
       });
     },
   });
 }
 
-function addLog(activity, minutes, note, date) {
+function addLog(activity, minutes, note, date, bad = false) {
+  if (bad) return addBadLog(activity, minutes, note, date);
   const today = todayKey();
   const before = levelInfo(totalXp());
   const statsBefore = computeStats(state.logs, today).values;
@@ -2440,6 +2481,42 @@ function addLog(activity, minutes, note, date) {
       const rb = rankFor(before.level), ra = rankFor(lvNow.level);
       showLevelUp(lvNow.level, ra.letter !== rb.letter ? ra : null);
     }
+  });
+}
+
+/* Ce que j'ai mal fait : −1 XP par minute (−25 XP pour "1 fois"), stats en baisse */
+function addBadLog(activity, minutes, note, date) {
+  const today = todayKey();
+  const before = levelInfo(totalXp());
+  const statsBefore = computeStats(state.logs, today).values;
+  const log = {
+    id: uid(), date, ts: Date.now(), activityId: activity.id, name: activity.name, icon: activity.icon,
+    minutes: minutes || null, note: note.slice(0, 280), stats: [...activity.stats], difficulty: 'normal',
+    bad: true, xp: -entryXp(minutes, 'normal'), quality: 1, verdict: '',
+  };
+  ui.lastLogId = log.id;
+  const qBefore = dailyQuest(today);
+  snapshotForAnim();
+  state.logs.push(log);
+  save();
+  const statsAfter = computeStats(state.logs, today).values;
+  const losses = STAT_KEYS.map(k => ({ k, d: statsAfter[k] - statsBefore[k] })).filter(g => g.d <= -0.01)
+    .map(g => `${statByKey[g.k].name} ${g.d.toFixed(2).replace('.', ',')}`);
+  const qAfter = dailyQuest(today);
+  render();
+  sfx('penalty'); haptic(2);
+  const lostGoal = qBefore.goals.some(g => g.key === 'waste' && g.done) && qAfter.goals.some(g => g.key === 'waste' && !g.done);
+  flyXp(ui.tapRect, log.xp).then(() => celebrate({
+    kind: 'fail',
+    title: 'TEMPS PERDU',
+    icon: log.icon,
+    big: `−${Math.abs(log.xp)} XP`,
+    sub: `${log.name}${log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
+    chips: losses,
+    lines: [lostGoal ? `⚠ Limite de temps perdu dépassée : la quête quotidienne est compromise.` : 'Le Système enregistre tout. Rattrape-toi avec une vraie quête.'],
+  })).then(() => {
+    const lvNow = levelInfo(totalXp());
+    if (lvNow.level < before.level) { toast('Niveau perdu', `Niveau ${before.level} → ${lvNow.level}`, 'warn'); sfx('penalty'); haptic(3); }
   });
 }
 
@@ -2730,8 +2807,9 @@ function renderSettings() {
       </div>
       <div class="btn-row">
         <label class="field" style="margin-bottom:0"><span>Repas notés (0 à 3)</span><input class="input" data-quest="meals" inputmode="numeric" value="${state.questCfg.meals}"></label>
-        <label class="field toggle" style="margin-bottom:0"><span>Bilan du jour</span><input type="checkbox" data-quest="bilan" ${state.questCfg.bilan ? 'checked' : ''}></label>
+        <label class="field" style="margin-bottom:0"><span>Temps perdu max (min)</span><input class="input" data-quest="waste" inputmode="numeric" value="${state.questCfg.waste}"></label>
       </div>
+      <label class="field toggle" style="margin:12px 0 0"><span>Objectif « temps perdu limité »</span><input type="checkbox" data-quest="bilan" ${state.questCfg.bilan ? 'checked' : ''}></label>
     </section>
 
     <section class="panel">
@@ -2771,6 +2849,20 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Ce que je fais mal</div><div class="panel-sub">${state.badActivities.length}</div></div>
+      ${state.badActivities.map(a => `
+        <div class="setting-activity">
+          <div class="entry-emoji">${esc(a.icon)}</div>
+          <div class="entry-body">
+            <div class="entry-title">${esc(a.name)}</div>
+            <div class="entry-meta trend-down">▼ ${a.stats.map(k => statByKey[k].name).join(' + ')}</div>
+          </div>
+          <button class="icon-btn" data-edit-bad="${esc(a.id)}" aria-label="Modifier">✎</button>
+        </div>`).join('') || '<div class="empty">Aucune.</div>'}
+      <button class="btn block" style="margin-top:12px" data-new-bad="1">＋ Ajouter une perte de temps</button>
+    </section>
+
+    <section class="panel">
       <details class="rules">
         <summary>Comment fonctionne le Système ?</summary>
         <ul>
@@ -2780,7 +2872,7 @@ function renderSettings() {
           <li><b>Nutrition</b> : une journée terminée avec 3 repas notés, calories entre objectif −400 et objectif +100, et protéines ≥ 80 % = +${NUTRI_XP} XP et +1 point de Discipline.</li>
           <li><b>Corps</b> : l'hologramme ne s'affine qu'avec ton vrai poids. Perte réaliste : 0,5 à 1 kg par semaine.</li>
           <li><b>Notes de quêtes</b> : le Système les lit. « Intense, record, concentré » = jusqu'à ×1,5 d'XP ; « distrait, fatigué, pas motivé » = jusqu'à ×0,6.</li>
-          <li><b>Bilan du jour</b> (onglet Statistiques) : ce que tu as accompli fait monter les stats concernées (30 min = 1 point) ; ce qui t'a fait perdre du temps les fait baisser (1 h = −2,5 points). Une journée négative fait reculer tes stats et supprime le bonus de régularité.</li>
+          <li><b>Ce que j'ai mal fait</b> (onglet Aujourd'hui) : −1 XP par minute (−25 XP pour « 1 fois ») et les stats concernées baissent, plus fort que les gains (×1,25). Une journée où le mal l'emporte fait reculer tes stats et supprime le bonus de régularité.</li>
           <li><b>Poids</b> : chaque kg perdu vers l'objectif = +${BODY_XP_PER_KG} XP, chaque kg repris = −${BODY_XP_PER_KG} XP. Ton niveau suit ton corps.</li>
           <li><b>Quête quotidienne</b> : accomplie = +${QUEST_XP} XP ; ratée = PÉNALITÉ (−${QUEST_PENALTY_XP} XP, Discipline −2 points).</li>
           <li><b>Progression</b> : calculée sur toute l'année depuis le jour 0 : 40 % stats, 35 % corps (poids), 25 % nutrition (30 derniers jours).</li>
@@ -2815,22 +2907,23 @@ function goalPaceHtml() {
   return `<p class="small ${ok ? 'muted' : 'decay-warn'}" style="margin-bottom:0">Objectif ${fmtKg(b.goalWeight)} kg à moins de ${fmtG(b.goalFat + 1)} % de graisse pour le ${esc(fmtDayLong(b.goalDate))} : ≈ ${fmtG(Math.round(weeks))} semaines, ${fmtKg(Math.max(0, toLose))} kg à perdre (≈ ${fmtKg(Math.max(0, fatToLose))} kg de graisse) → <b>${pace > 0 ? fmtG(Math.round(pace * 100) / 100) : '0'} kg/semaine</b>. ${ok ? 'Rythme réaliste ✓' : 'Rythme trop rapide : recule la date ou accepte un rythme plus lent.'}</p>`;
 }
 
-function openActivityEditor(activity) {
+function openActivityEditor(activity, bad = false) {
   const isNew = !activity;
-  const a = activity ? { ...activity, stats: [...activity.stats] } : { id: uid(), name: '', icon: '⭐', stats: [], difficulty: 'normal' };
+  const listKey = bad ? 'badActivities' : 'activities';
+  const a = activity ? { ...activity, stats: [...activity.stats] } : { id: uid(), name: '', icon: bad ? '⛔' : '⭐', stats: [], difficulty: 'normal' };
   const body = `
     <div class="btn-row" style="gap:10px">
       <label class="field" style="flex:0 0 84px"><span>Icône</span>
         <input class="input center" id="act-icon" maxlength="8" value="${esc(a.icon)}" style="font-size:24px;padding:8px">
       </label>
       <label class="field" style="flex:1"><span>Nom</span>
-        <input class="input" id="act-name" maxlength="40" value="${esc(a.name)}" placeholder="Ex : Méditation" autocomplete="off">
+        <input class="input" id="act-name" maxlength="40" value="${esc(a.name)}" placeholder="${bad ? 'Ex : Snapchat' : 'Ex : Méditation'}" autocomplete="off">
       </label>
     </div>
-    <div class="field"><span>Stats qui montent</span>
+    <div class="field"><span>${bad ? 'Stats qui baissent' : 'Stats qui montent'}</span>
       <div class="chips">${STATS.map(s => `<button type="button" class="chip ${a.stats.includes(s.key) ? 'on' : ''}" data-stat="${s.key}">${s.icon} ${s.name}</button>`).join('')}</div>
     </div>
-    <div class="field"><span>Intensité (multiplie l'XP et les gains)</span>
+    <div class="field" ${bad ? 'hidden' : ''}><span>Intensité (multiplie l'XP et les gains)</span>
       <div class="seg">${DIFFICULTIES.map(d => `<button type="button" class="${a.difficulty === d.key ? 'on' : ''}" data-diff="${d.key}">${d.label}</button>`).join('')}</div>
     </div>
     <div class="stack" style="margin-top:6px">
@@ -2840,7 +2933,8 @@ function openActivityEditor(activity) {
     <p class="small faint">Modifier une activité ne change pas les quêtes déjà enregistrées.</p>`;
 
   openSheet({
-    tag: isNew ? '[SYSTÈME] Nouvelle activité' : "[SYSTÈME] Modifier l'activité",
+    tag: (isNew ? '[SYSTÈME] Nouvelle ' : '[SYSTÈME] Modifier ') + (bad ? 'perte de temps' : 'activité'),
+    cls: bad ? 'sheet-bad' : '',
     title: isNew ? 'Créer une activité' : a.name,
     body,
     buttons: [{ label: 'Annuler', value: null, cls: 'ghost' }],
@@ -2867,8 +2961,10 @@ function openActivityEditor(activity) {
           // on garde l'ordre officiel des stats
           a.stats = STAT_KEYS.filter(k => a.stats.includes(k));
           a.u = Date.now();
-          if (isNew) state.activities.push(a);
-          else state.activities = state.activities.map(x => x.id === a.id ? a : x);
+          if (bad) delete a.difficulty;
+          a.u = Date.now();
+          if (isNew) state[listKey].push(a);
+          else state[listKey] = state[listKey].map(x => x.id === a.id ? a : x);
           save();
           close(null);
           render();
@@ -2880,7 +2976,7 @@ function openActivityEditor(activity) {
           const ok = await confirmBox("Supprimer l'activité ?", `${esc(a.icon)} ${esc(a.name)} disparaîtra de la liste. Tes quêtes passées et ton XP sont conservés.`, 'Supprimer', true);
           if (!ok) return;
           tomb(a.id);
-          state.activities = state.activities.filter(x => x.id !== a.id);
+          state[listKey] = state[listKey].filter(x => x.id !== a.id);
           save();
           render();
           toast('Activité supprimée', a.name);
@@ -3009,6 +3105,17 @@ document.addEventListener('click', e => {
     if (a) openLogSheet(a);
     return;
   }
+  const lb = t.closest('[data-log-bad]');
+  if (lb) {
+    const a = state.badActivities.find(x => x.id === lb.dataset.logBad);
+    ui.tapRect = lb.getBoundingClientRect();
+    sfx('tap'); haptic();
+    if (a) openLogSheet(a, true);
+    return;
+  }
+  if (t.closest('#view [data-new-bad]')) return openActivityEditor(null, true);
+  const eb = t.closest('[data-edit-bad]');
+  if (eb) return openActivityEditor(state.badActivities.find(x => x.id === eb.dataset.editBad), true);
   if (t.closest('#view [data-new-activity]')) return openActivityEditor(null);
   const ed = t.closest('[data-edit-activity]');
   if (ed) return openActivityEditor(state.activities.find(x => x.id === ed.dataset.editActivity));
@@ -3073,7 +3180,7 @@ document.addEventListener('click', e => {
     return;
   }
   if (t.closest('#view [data-bilan="save"]')) return saveBilan();
-  if (t.closest('#view [data-goto-bilan]')) { go('stats'); setTimeout(() => { const el = $('#bilan'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350); return; }
+  if (t.closest('#view [data-goto-bilan]')) { go('today'); return; }
   const sy = t.closest('#view [data-sync]');
   if (sy) {
     const k = sy.dataset.sync;
@@ -3132,7 +3239,7 @@ document.addEventListener('change', e => {
     const k = e.target.dataset.quest;
     if (k === 'bilan') state.questCfg.bilan = e.target.checked;
     else {
-      const max = { sport: 600, focus: 900, meals: 3 }[k];
+      const max = { sport: 600, focus: 900, meals: 3, waste: 600 }[k];
       const v = Math.round(parseFloat(e.target.value.replace(',', '.')));
       if (!Number.isFinite(v) || v < 0 || v > max) { toast('Valeur invalide', `Entre 0 et ${max}.`, 'warn'); e.target.value = state.questCfg[k]; return; }
       state.questCfg[k] = v;
@@ -3241,6 +3348,7 @@ function mergeStates(a, b, preferB = false) {
     seenReports: [...new Set([...(a.seenReports || []), ...(b.seenReports || [])])],
     tombstones: t,
     activities: union(a.activities, b.activities),
+    badActivities: union(a.badActivities || [], b.badActivities || []),
     logs: union(a.logs, b.logs).sort((x, y) => x.ts - y.ts),
     meals: union(a.meals, b.meals),
     weights: oneByDate(union(a.weights, b.weights)).sort((x, y) => x.date.localeCompare(y.date)),
