@@ -33,6 +33,12 @@ PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 3. Commit + push : l'iPhone récupère la nouvelle version à la prochaine ouverture
    (l'app se recharge toute seule une fois et affiche « Mise à jour installée »).
 
+Synchronisation entre appareils (facultative) : Réglages → Synchronisation, avec un
+jeton GitHub limité aux gists. La sauvegarde est rangée dans un gist secret
+(« Mon Système — sauvegarde synchronisée ») et fusionnée à chaque ouverture et après
+chaque changement (suppressions propagées, réglages les plus récents gagnants).
+Les photos ne sont pas synchronisées.
+
 Les données restent dans le téléphone (localStorage, clé `monSysteme.save` ;
 photos dans IndexedDB, base `monSysteme`) et ne sont jamais envoyées sur Internet.
 L'export JSON contient aussi les pesées et les photos.

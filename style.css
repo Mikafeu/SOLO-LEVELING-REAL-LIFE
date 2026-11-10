@@ -901,3 +901,20 @@ select.input { appearance: none; -webkit-appearance: none; font-size: 15px; padd
 .landscape .chart-sum { margin-bottom: 4px; }
 .landscape .chart-sum b { font-size: 18px; }
 .landscape .ls-inner > .small { display: none; }
+
+/* =========================================================
+   v1.6 — synchronisation
+   ========================================================= */
+.topbar { position: relative; }
+.sync-dot { position: absolute; right: 4px; top: 14px; width: 10px; height: 10px; border-radius: 50%; background: transparent; }
+.sync-dot.s-ok { background: var(--good); box-shadow: 0 0 8px var(--good); }
+.sync-dot.s-busy { background: var(--neon); box-shadow: 0 0 8px var(--neon); animation: blink .8s infinite; }
+.sync-dot.s-error { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+.sync-dot.s-offline { background: var(--warn); }
+.sync-steps { padding-left: 18px; line-height: 1.55; }
+.sync-steps a { color: var(--neon-2); }
+.sync-state { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(56, 200, 255, .06); }
+.sync-state b { display: block; font-family: var(--mono); letter-spacing: .08em; }
+.sync-state span { font-size: 13px; color: var(--text-dim); }
+.sync-state.s-ok { border-color: rgba(77, 255, 184, .6); } .sync-state.s-ok b { color: var(--good); }
+.sync-state.s-error { border-color: rgba(255, 92, 122, .6); } .sync-state.s-error b { color: var(--bad); }

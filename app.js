@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -119,8 +119,13 @@ function freshState() {
     meals: [],
     journals: [],
     seenReports: [],
+    tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
+    settingsAt: 0,    // dernière modif des réglages
+    replacedAt: 0,    // dernière remise à zéro / import (remplace tout)
   };
 }
+const tomb = id => { if (id) state.tombstones[id] = Date.now(); };
+const touchSettings = () => { state.settingsAt = Date.now(); };
 /* l'ancienne stat "Progression" est devenue un calcul global : ses points vont à la Concentration */
 const migrateStats = arr => [...new Set((Array.isArray(arr) ? arr : []).map(k => (k === 'progression' ? 'concentration' : k)).filter(k => STAT_KEYS.includes(k)))];
 
@@ -133,6 +138,13 @@ function sanitizeState(raw) {
   if (s.playerName === 'Chasseur') s.playerName = 'Charisme';
   if (isValidKey(raw.startDate)) s.startDate = raw.startDate;
   s.seenReports = Array.isArray(raw.seenReports) ? raw.seenReports.filter(x => typeof x === 'string').slice(-48) : [];
+  s.settingsAt = Number.isFinite(raw.settingsAt) ? raw.settingsAt : 0;
+  s.replacedAt = Number.isFinite(raw.replacedAt) ? raw.replacedAt : 0;
+  s.tombstones = {};
+  if (raw.tombstones && typeof raw.tombstones === 'object') {
+    const yearAgo = Date.now() - 400 * 86400000;
+    for (const [k, v] of Object.entries(raw.tombstones)) if (typeof k === 'string' && Number.isFinite(v) && v > yearAgo) s.tombstones[k] = v;
+  }
   s.createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : s.createdAt;
   s.lastExportAt = typeof raw.lastExportAt === 'string' ? raw.lastExportAt : null;
   s.activities = raw.activities
@@ -143,6 +155,7 @@ function sanitizeState(raw) {
       icon: typeof a.icon === 'string' && a.icon ? a.icon.slice(0, 8) : '⭐',
       stats: migrateStats(a.stats),
       difficulty: DIFFICULTIES.some(d => d.key === a.difficulty) ? a.difficulty : 'normal',
+      u: Number.isFinite(a.u) ? a.u : 0,
     }));
   s.logs = raw.logs
     .filter(l => l && isValidKey(l.date))
@@ -180,7 +193,7 @@ function sanitizeState(raw) {
   s.weights = (Array.isArray(raw.weights) ? raw.weights : [])
     .filter(w => w && isValidKey(w.date) && okKg(w.kg))
     .map(w => ({
-      id: typeof w.id === 'string' && w.id ? w.id : uid(), date: w.date, kg: Math.round(w.kg * 10) / 10,
+      id: typeof w.id === 'string' && w.id ? w.id : uid(), date: w.date, kg: Math.round(w.kg * 10) / 10, ts: Number.isFinite(w.ts) ? w.ts : 0,
       fat: inR(w.fat, 3, 70) ? w.fat : null, muscle: inR(w.muscle, 10, 80) ? w.muscle : null,
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -196,7 +209,7 @@ function sanitizeState(raw) {
   s.journals = (Array.isArray(raw.journals) ? raw.journals : [])
     .filter(j => j && isValidKey(j.date) && typeof j.text === 'string')
     .map(j => ({
-      id: typeof j.id === 'string' ? j.id : uid(), date: j.date, text: j.text.slice(0, 1000),
+      id: typeof j.id === 'string' ? j.id : uid(), date: j.date, text: j.text.slice(0, 1000), ts: Number.isFinite(j.ts) ? j.ts : 0,
       score: Number.isFinite(j.score) ? Math.max(-3, Math.min(3, j.score)) : 0,
       verdict: typeof j.verdict === 'string' ? j.verdict.slice(0, 300) : '',
     }));
@@ -218,7 +231,8 @@ function loadState() {
 
 let state = loadState();
 
-function save() {
+function save(fromSync = false) {
+  if (!fromSync && window.Sync) window.Sync.schedule();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
@@ -958,6 +972,7 @@ function openWeighSheet() {
         }
         const del = e.target.closest('[data-w-del]');
         if (del) {
+          tomb(del.dataset.wDel);
           state.weights = state.weights.filter(w => w.id !== del.dataset.wDel);
           save();
           $('#weigh-body', sheet).innerHTML = weighBody();
@@ -972,8 +987,9 @@ const MILESTONES = [0.25, 0.5, 0.75, 1];
 function addWeight(kg, fat = null, muscle = null) {
   const before = bodyProgress();
   const date = todayKey();
-  state.weights = state.weights.filter(w => w.date !== date); // une pesée par jour
-  state.weights.push({ id: uid(), date, kg, fat, muscle });
+  state.weights.filter(w => w.date === date).forEach(w => tomb(w.id)); // une pesée par jour
+  state.weights = state.weights.filter(w => w.date !== date);
+  state.weights.push({ id: uid(), date, kg, fat, muscle, ts: Date.now() });
   state.weights.sort((a, b) => a.date.localeCompare(b.date));
   save();
   const after = bodyProgress();
@@ -1650,6 +1666,7 @@ async function deleteFood(id) {
   const x = state.meals.find(m => m.id === id);
   if (!x) return;
   if (!(await confirmBox('Retirer cet aliment ?', `${esc(x.name)} — ${fmtNum(x.kcal)} kcal`, 'Retirer', true))) return;
+  tomb(id);
   state.meals = state.meals.filter(m => m.id !== id);
   save();
   render();
@@ -1756,8 +1773,9 @@ function openJournalSheet() {
         if (text.length < 8) { toast('Trop court', 'Raconte un peu plus ta journée.', 'warn'); return; }
         const before = computeStats(state.logs, today).values.concentration;
         const j = judgeDay(text);
+        state.journals.filter(x => x.date === today).forEach(x => tomb(x.id));
         state.journals = state.journals.filter(x => x.date !== today);
-        state.journals.push({ id: uid(), date: today, text: text.slice(0, 1000), score: j.score, verdict: j.verdict });
+        state.journals.push({ id: uid(), date: today, ts: Date.now(), text: text.slice(0, 1000), score: j.score, verdict: j.verdict });
         save();
         close(null);
         render();
@@ -1979,6 +1997,7 @@ async function deleteLog(id) {
   if (!l) return;
   const ok = await confirmBox('Supprimer cette quête ?', `${esc(l.icon)} ${esc(l.name)} (${esc(fmtDayShort(l.date))}) — ${l.xp} XP seront retirés.`, 'Supprimer', true);
   if (!ok) return;
+  tomb(id);
   state.logs = state.logs.filter(x => x.id !== id);
   save();
   render();
@@ -2198,6 +2217,11 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Synchronisation</div></div>
+      <div id="sync-panel">${syncPanelInner()}</div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><div class="panel-title">Sauvegarde</div></div>
       <p class="small muted" style="margin-top:0">Tes données sont dans ce téléphone. Exporte régulièrement un fichier (dans "Fichiers" ou iCloud Drive) pour ne jamais rien perdre.</p>
       <p class="small faint">Dernier export : ${lastExp ? `${lastExp.toLocaleDateString('fr-FR')} à ${lastExp.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : 'jamais'}</p>
@@ -2316,6 +2340,7 @@ function openActivityEditor(activity) {
           if (!a.stats.length) { toast('Aucune stat choisie', 'Choisis au moins une stat à faire monter.', 'warn'); return; }
           // on garde l'ordre officiel des stats
           a.stats = STAT_KEYS.filter(k => a.stats.includes(k));
+          a.u = Date.now();
           if (isNew) state.activities.push(a);
           else state.activities = state.activities.map(x => x.id === a.id ? a : x);
           save();
@@ -2328,6 +2353,7 @@ function openActivityEditor(activity) {
           close(null);
           const ok = await confirmBox("Supprimer l'activité ?", `${esc(a.icon)} ${esc(a.name)} disparaîtra de la liste. Tes quêtes passées et ton XP sont conservés.`, 'Supprimer', true);
           if (!ok) return;
+          tomb(a.id);
           state.activities = state.activities.filter(x => x.id !== a.id);
           save();
           render();
@@ -2386,6 +2412,7 @@ function importSave(file) {
         'Importer', false);
       if (!ok) return;
       state = next;
+      state.replacedAt = Date.now();
       save();
       if (inPhotos) {
         await PhotoDB.clear().catch(() => {});
@@ -2417,6 +2444,7 @@ async function resetAll() {
   if (!ok2) return;
   const name = state.playerName, body = { ...state.body };
   state = freshState();
+  state.replacedAt = Date.now();
   state.playerName = name;
   state.body = body;
   save();
@@ -2500,6 +2528,20 @@ document.addEventListener('click', e => {
   if (t.closest('[data-landscape]')) return openLandscape();
   if (t.closest('[data-landscape-close]')) return closeLandscape();
 
+  const sy = t.closest('#view [data-sync]');
+  if (sy) {
+    const k = sy.dataset.sync;
+    if (k === 'now') { window.Sync.now().then(() => toast(window.Sync.status === 'ok' ? 'Synchronisé' : 'Synchronisation impossible', window.Sync.status === 'ok' ? 'Téléphone et ordinateur sont à jour.' : window.Sync.lastError, window.Sync.status === 'ok' ? 'info' : 'warn')); return; }
+    if (k === 'off') { confirmBox('Désactiver la synchronisation ?', 'Tes données restent dans cet appareil, elles ne seront simplement plus envoyées ni reçues.', 'Désactiver', true).then(ok => { if (ok) { window.Sync.disable(); render(); } }); return; }
+    if (k === 'enable') {
+      const tok = ($('#sync-token') || {}).value || '';
+      if (!/^(ghp_|github_pat_)[A-Za-z0-9_]{20,}$/.test(tok.trim())) { toast('Jeton invalide', 'Il doit commencer par ghp_ (ou github_pat_).', 'warn'); return; }
+      sy.disabled = true; sy.textContent = '⟳ Connexion à GitHub…';
+      window.Sync.enable(tok).then(() => { render(); toast('Synchronisation activée', 'Fais pareil sur ton autre appareil avec le même jeton.'); })
+        .catch(e => { render(); toast('Activation impossible', e.message, 'warn'); });
+      return;
+    }
+  }
   const action = t.closest('#view [data-action]');
   if (action) {
     const a = action.dataset.action;
@@ -2516,6 +2558,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   if (e.target.id === 'player-name') {
     state.playerName = e.target.value.trim().slice(0, 40) || 'Charisme';
+    touchSettings();
     save();
     toast('Profil mis à jour', state.playerName);
   }
@@ -2528,6 +2571,7 @@ document.addEventListener('change', e => {
       return;
     }
     state.body[key] = kg;
+    touchSettings();
     save();
     e.target.value = fmtKg(kg);
     toast('Objectif mis à jour', `${fmtKg(state.body.startWeight)} kg → ${fmtKg(state.body.goalWeight)} kg`);
@@ -2536,6 +2580,7 @@ document.addEventListener('change', e => {
     const v = e.target.value;
     if (!isValidKey(v)) { toast('Date invalide'); return; }
     if (e.target.dataset.date === 'startDate') state.startDate = v; else state.body.goalDate = v;
+    touchSettings();
     save();
     toast('Date enregistrée', fmtDayLong(v));
     render();
@@ -2543,7 +2588,7 @@ document.addEventListener('change', e => {
   }
   if (e.target.dataset && e.target.dataset.body) {
     const key = e.target.dataset.body, raw = e.target.value.trim();
-    if (!raw && key !== 'fatStart') { state.body[key] = null; save(); toast('Profil mis à jour'); return; }
+    if (!raw && key !== 'fatStart') { state.body[key] = null; touchSettings(); save(); toast('Profil mis à jour'); return; }
     const v = parseFloat(raw.replace(',', '.'));
     if (!Number.isFinite(v) || v < +e.target.dataset.min || v > +e.target.dataset.max) {
       toast('Valeur invalide', `Entre ${e.target.dataset.min} et ${e.target.dataset.max}.`, 'warn');
@@ -2551,6 +2596,7 @@ document.addEventListener('change', e => {
       return;
     }
     state.body[key] = Math.round(v * 10) / 10;
+    touchSettings();
     save();
     toast('Profil mis à jour', key === 'kcalTarget' || key === 'heightCm' || key === 'age' ? `Objectif : ${fmtNum(nutritionTargets().kcal)} kcal/jour` : '');
   }
@@ -2573,6 +2619,188 @@ document.addEventListener('visibilitychange', () => {
     render();
   }
 });
+
+/* =========================================================
+   SYNCHRONISATION téléphone ↔ ordinateur ↔ site
+   Une copie de la sauvegarde est rangée dans un Gist SECRET de ton compte
+   GitHub. Chaque appareil fusionne ses changements avec ceux des autres.
+   Le jeton reste dans l'appareil (jamais dans la sauvegarde exportée).
+   ========================================================= */
+const SYNC_KEY = 'monSysteme.sync';
+const GIST_DESC = 'Mon Système — sauvegarde synchronisée (ne pas supprimer)';
+const GIST_FILE = 'mon-systeme.json';
+
+/* Fusion de deux sauvegardes : rien ne se perd, les suppressions suivent. */
+function mergeStates(a, b, preferB = false) {
+  if ((a.replacedAt || 0) !== (b.replacedAt || 0)) {
+    // une remise à zéro / un import plus récent remplace tout ce qui est plus ancien
+    const newer = (a.replacedAt || 0) > (b.replacedAt || 0) ? a : b;
+    const older = newer === a ? b : a;
+    const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
+    const out = JSON.parse(JSON.stringify(newer));
+    // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
+    for (const k of ['logs', 'meals', 'weights', 'journals']) {
+      const ids = new Set(out[k].map(x => x.id));
+      out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
+    }
+    return out;
+  }
+  const t = { ...a.tombstones };
+  for (const [k, v] of Object.entries(b.tombstones || {})) t[k] = Math.max(t[k] || 0, v);
+  const stamp = x => x.u || x.ts || 0;
+  const union = (x, y) => {
+    const m = new Map();
+    for (const it of x.concat(y)) {
+      if (t[it.id]) continue;
+      const cur = m.get(it.id);
+      if (!cur || stamp(it) > stamp(cur)) m.set(it.id, it);
+    }
+    return [...m.values()];
+  };
+  const oneByDate = arr => {
+    const m = new Map();
+    for (const it of arr) { const cur = m.get(it.date); if (!cur || stamp(it) >= stamp(cur)) m.set(it.date, it); }
+    return [...m.values()];
+  };
+  const settingsFrom = preferB || (b.settingsAt || 0) > (a.settingsAt || 0) ? b : a;
+  return {
+    ...a,
+    playerName: settingsFrom.playerName,
+    startDate: settingsFrom.startDate,
+    body: { ...settingsFrom.body },
+    settingsAt: Math.max(a.settingsAt || 0, b.settingsAt || 0),
+    replacedAt: a.replacedAt || 0,
+    createdAt: [a.createdAt, b.createdAt].filter(Boolean).sort()[0] || a.createdAt,
+    lastExportAt: [a.lastExportAt, b.lastExportAt].filter(Boolean).sort().pop() || null,
+    seenReports: [...new Set([...(a.seenReports || []), ...(b.seenReports || [])])],
+    tombstones: t,
+    activities: union(a.activities, b.activities),
+    logs: union(a.logs, b.logs).sort((x, y) => x.ts - y.ts),
+    meals: union(a.meals, b.meals),
+    weights: oneByDate(union(a.weights, b.weights)).sort((x, y) => x.date.localeCompare(y.date)),
+    journals: oneByDate(union(a.journals, b.journals)),
+  };
+}
+
+window.Sync = (() => {
+  let cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem(SYNC_KEY) || '{}') || {}; } catch (_) { cfg = {}; }
+  let timer = null, running = null, status = cfg.token ? 'idle' : 'off', lastError = '';
+  const saveCfg = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(cfg)); } catch (_) {} };
+  const setStatus = (st, err = '') => {
+    status = st; lastError = err;
+    const el = $('#sync-dot');
+    if (el) { el.className = 'sync-dot s-' + st; el.title = st === 'error' ? err : st === 'ok' ? 'Synchronisé' : st === 'busy' ? 'Synchronisation…' : ''; }
+    if (currentTab === 'settings' && $('#sync-panel')) $('#sync-panel').innerHTML = syncPanelInner();
+  };
+  const api = async (path, opt = {}) => {
+    const r = await fetch('https://api.github.com' + path, {
+      ...opt,
+      cache: 'no-store',
+      headers: { Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', ...(opt.headers || {}) },
+    });
+    if (r.status === 401 || r.status === 403) throw new Error('Jeton GitHub refusé (vérifie qu’il a le droit « gist »).');
+    if (!r.ok) throw new Error('GitHub a répondu ' + r.status);
+    return r.json();
+  };
+  const readGist = async id => {
+    const g = await api('/gists/' + id);
+    const f = g.files && g.files[GIST_FILE];
+    if (!f) return null;
+    let txt = f.content;
+    if (f.truncated && f.raw_url) txt = await (await fetch(f.raw_url, { cache: 'no-store' })).text();
+    return txt;
+  };
+  const findGist = async () => {
+    for (let page = 1; page <= 5; page++) {
+      const list = await api(`/gists?per_page=100&page=${page}`);
+      const g = list.find(x => x.description === GIST_DESC && x.files && x.files[GIST_FILE]);
+      if (g) return g.id;
+      if (list.length < 100) break;
+    }
+    return null;
+  };
+  const payload = () => JSON.stringify({ app: 'mon-systeme', appVersion: APP_VERSION, syncedAt: new Date().toISOString(), data: state });
+
+  async function run() {
+    if (!cfg.token) return;
+    if (!navigator.onLine) { setStatus('offline'); return; }
+    setStatus('busy');
+    try {
+      if (!cfg.gistId) cfg.gistId = await findGist();
+      if (!cfg.gistId) {
+        const g = await api('/gists', { method: 'POST', body: JSON.stringify({ description: GIST_DESC, public: false, files: { [GIST_FILE]: { content: payload() } } }) });
+        cfg.gistId = g.id;
+        cfg.joined = true;
+      } else {
+        const txt = await readGist(cfg.gistId);
+        let remote = null;
+        if (txt) { const parsed = JSON.parse(txt); remote = sanitizeState(parsed.data || parsed); }
+        const before = JSON.stringify(state);
+        if (remote) {
+          // un appareil neuf (vide) qui rejoint reprend tout du cloud ; sinon on fusionne
+          const fresh = !cfg.joined && !state.logs.length && !state.meals.length && !state.weights.length && !state.journals.length;
+          state = sanitizeState(fresh ? remote : mergeStates(state, remote, !cfg.joined));
+          cfg.joined = true;
+          save(true);
+          if (JSON.stringify(state) !== before) render();
+        }
+        await api('/gists/' + cfg.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content: payload() } } }) });
+      }
+      cfg.lastSync = Date.now();
+      saveCfg();
+      setStatus('ok');
+    } catch (e) {
+      console.warn('Synchronisation', e);
+      if (/refusé/.test(e.message)) cfg.gistId = cfg.gistId || null;
+      setStatus(navigator.onLine ? 'error' : 'offline', e.message || 'Erreur');
+    }
+  }
+  const now = () => { if (!running) running = run().finally(() => { running = null; }); return running; };
+  return {
+    get enabled() { return !!cfg.token; },
+    get status() { return status; },
+    get lastError() { return lastError; },
+    get lastSync() { return cfg.lastSync || null; },
+    now,
+    schedule() { if (!cfg.token) return; clearTimeout(timer); timer = setTimeout(now, 2500); },
+    async enable(token) {
+      cfg = { token: token.trim() };
+      saveCfg();
+      setStatus('busy');
+      await now();
+      if (status === 'error') { const err = lastError; cfg = {}; saveCfg(); setStatus('off'); throw new Error(err); }
+    },
+    disable() { cfg = {}; saveCfg(); setStatus('off'); },
+    refreshDot() { setStatus(status, lastError); },
+  };
+})();
+
+function syncPanelInner() {
+  const S = window.Sync;
+  if (!S.enabled) return `
+    <p class="small muted" style="margin-top:0">Pour retrouver les <b>mêmes données</b> sur ton téléphone, ton ordinateur et le site, active la synchronisation <b>sur chaque appareil</b> avec le même jeton GitHub.</p>
+    <ol class="small muted sync-steps">
+      <li>Ouvre <a href="https://github.com/settings/tokens/new?scopes=gist&description=Mon%20Syst%C3%A8me" target="_blank" rel="noopener">ce lien GitHub</a> (connecté à ton compte).</li>
+      <li>« Expiration » : choisis <b>No expiration</b>. La case <b>gist</b> est déjà cochée.</li>
+      <li>Tout en bas : <b>Generate token</b>, puis copie le code qui commence par <b>ghp_</b>.</li>
+      <li>Colle-le ici, puis touche <b>Activer</b>. Refais la même chose sur l'autre appareil.</li>
+    </ol>
+    <input class="input" id="sync-token" type="password" placeholder="ghp_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button type="button" class="btn primary block" style="margin-top:10px" data-sync="enable">☁️ Activer la synchronisation</button>
+    <p class="small faint" style="margin-bottom:0">Le jeton ne donne accès qu'à tes « gists » et reste dans cet appareil. Ne le partage avec personne. Les photos restent dans chaque appareil (utilise Exporter / Importer pour elles).</p>`;
+  const ago = S.lastSync ? Math.round((Date.now() - S.lastSync) / 60000) : null;
+  return `
+    <div class="sync-state s-${S.status}">
+      <b>${S.status === 'ok' ? '✓ Synchronisé' : S.status === 'busy' ? '⟳ Synchronisation…' : S.status === 'offline' ? '⚠ Hors connexion' : S.status === 'error' ? '⚠ Erreur' : '☁️ Activée'}</b>
+      <span>${S.status === 'error' ? esc(S.lastError) : ago === null ? '' : ago < 1 ? "Dernière synchro : à l'instant" : `Dernière synchro : il y a ${ago} min`}</span>
+    </div>
+    <div class="btn-row" style="margin-top:10px">
+      <button type="button" class="btn" data-sync="now">⟳ Synchroniser</button>
+      <button type="button" class="btn ghost" data-sync="off">Désactiver ici</button>
+    </div>
+    <p class="small faint" style="margin-bottom:0">Tout se synchronise tout seul : à l'ouverture de l'app et quelques secondes après chaque changement.</p>`;
+}
 
 /* =========================================================
    Hors connexion + mises à jour automatiques (service worker)
@@ -2606,6 +2834,10 @@ async function start() {
   await loadPhotos();
   if (photos.length) render();
   setTimeout(maybeShowMonthReport, 900);
+  window.Sync.refreshDot();
+  if (window.Sync.enabled) window.Sync.now();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && window.Sync.enabled) window.Sync.now(); });
+  window.addEventListener('online', () => { if (window.Sync.enabled) window.Sync.now(); });
   try {
     if (sessionStorage.getItem('monSysteme.updated')) {
       sessionStorage.removeItem('monSysteme.updated');

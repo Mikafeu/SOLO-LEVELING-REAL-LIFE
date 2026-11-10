@@ -17,13 +17,14 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
 
-  <link rel="stylesheet" href="style.css?v=1.5.0">
+  <link rel="stylesheet" href="style.css?v=1.6.0">
 </head>
 <body>
   <div id="app">
     <header class="topbar">
       <div class="topbar-tag"><button type="button" id="day0-btn" class="day0-btn" aria-label="Voir le jour 0">0</button>[SYSTÈME]</div>
       <div class="topbar-title" id="topbar-title">Statut du joueur</div>
+      <span id="sync-dot" class="sync-dot s-off" aria-hidden="true"></span>
     </header>
 
     <main id="view" class="view" aria-live="polite"></main>
@@ -64,7 +65,7 @@
   <!-- choix de photos (galerie ou appareil photo) -->
   <input type="file" id="photo-file" accept="image/*" multiple hidden>
 
-  <script src="app.js?v=1.5.0"></script>
-  <script type="module" src="holo.js?v=1.5.0"></script>
+  <script src="app.js?v=1.6.0"></script>
+  <script type="module" src="holo.js?v=1.6.0"></script>
 </body>
 </html>
