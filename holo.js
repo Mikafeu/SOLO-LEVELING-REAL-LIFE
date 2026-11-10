@@ -13,75 +13,76 @@ const S = {
   failed: false, loading: null,
 };
 
-/* ---------- Lecture du modèle (format compact maison) ---------- */
+/* ---------- Lecture du modèle (format compact maison) ----------
+   v2 : deux sculptures du même maillage — MAINTENANT et OBJECTIF. */
 async function loadBodyGeometry() {
   const res = await fetch('assets/corps.bin');
   if (!res.ok) throw new Error('Modèle 3D introuvable');
   const buf = await res.arrayBuffer();
   const dv = new DataView(buf);
+  const ver = dv.getUint32(4, true);
   const nVerts = dv.getUint32(8, true);
   const nIdx = dv.getUint32(12, true);
   const nParts = dv.getUint32(16, true);
   const mn = [dv.getFloat32(24, true), dv.getFloat32(28, true), dv.getFloat32(32, true)];
   const mx = [dv.getFloat32(36, true), dv.getFloat32(40, true), dv.getFloat32(44, true)];
   let off = 48 + nParts * 8;
-  const q = new Uint16Array(buf, off, nVerts * 3);
+  const deq = q => {
+    const out = new Float32Array(nVerts * 3);
+    for (let i = 0; i < nVerts * 3; i++) { const a = i % 3; out[i] = mn[a] + (q[i] / 65535) * (mx[a] - mn[a]); }
+    return out;
+  };
+  const now = deq(new Uint16Array(buf, off, nVerts * 3));
   off += nVerts * 6;
-  const idx = nVerts < 65536 ? new Uint16Array(buf, off, nIdx) : new Uint32Array(buf, off, nIdx);
+  let goal = now;
+  if (ver >= 2) { goal = deq(new Uint16Array(buf, off, nVerts * 3)); off += nVerts * 6; }
+  const idx = ver >= 2 ? new Uint32Array(buf, off, nIdx) : new Uint16Array(buf, off, nIdx);
 
-  const pos = new Float32Array(nVerts * 3);
-  for (let i = 0; i < nVerts * 3; i++) {
-    const a = i % 3;
-    pos[i] = mn[a] + (q[i] / 65535) * (mx[a] - mn[a]);
-  }
-  // centre du torse (pour affiner autour du bon axe)
+  // centre du torse (pour la rotation sur place)
   let cx = 0, cz = 0, n = 0;
   for (let i = 0; i < nVerts; i++) {
-    const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+    const x = now[i * 3], y = now[i * 3 + 1], z = now[i * 3 + 2];
     if (y > 0.9 && y < 1.25 && Math.abs(x) < 0.17) { cx += x; cz += z; n++; }
   }
   cx = n ? cx / n : 0; cz = n ? cz / n : 0;
-  for (let i = 0; i < nVerts; i++) { pos[i * 3] -= cx; pos[i * 3 + 2] -= cz; }
+  for (const arr of [now, goal]) for (let i = 0; i < nVerts; i++) { arr[i * 3] -= cx; arr[i * 3 + 2] -= cz; }
 
+  const index = new THREE.BufferAttribute(idx, 1);
+  const normalsOf = pos => {
+    const t = new THREE.BufferGeometry();
+    t.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    t.setIndex(index);
+    t.computeVertexNormals();
+    return t.getAttribute('normal');
+  };
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  g.setIndex(new THREE.BufferAttribute(idx, 1));
-  g.computeVertexNormals();
+  g.setAttribute('position', new THREE.BufferAttribute(now, 3));
+  g.setAttribute('normal', normalsOf(now));
+  g.setAttribute('goalPos', new THREE.BufferAttribute(goal, 3));
+  g.setAttribute('goalNormal', goal === now ? g.getAttribute('normal') : normalsOf(goal));
+  g.setIndex(index);
   g.computeBoundingSphere();
   return g;
 }
 
 /* ---------- Shaders ---------- */
-const DEFORM = /* glsl */`
+const MORPH = /* glsl */`
   uniform float uSlim;
-  vec3 deform(vec3 p) {
-    float y = p.y;
-    float ax = abs(p.x);
-    float torso = smoothstep(0.26, 0.15, ax);              // épargne les bras
-    float waist = exp(-pow((y - 1.02) / 0.17, 2.0));        // ventre / taille
-    float chest = exp(-pow((y - 1.30) / 0.14, 2.0));        // poitrine
-    float hips  = exp(-pow((y - 0.86) / 0.12, 2.0));        // hanches
-    float thigh = exp(-pow((y - 0.62) / 0.16, 2.0));        // cuisses
-    float face  = exp(-pow((y - 1.58) / 0.08, 2.0));        // joues / cou
-    float k = 0.025 + torso * (0.11 * waist + 0.055 * chest + 0.06 * hips) + 0.05 * thigh + 0.035 * face;
-    float front = p.z > 0.0 ? 1.35 : 0.8;                   // le ventre part surtout devant
-    p.x *= 1.0 - uSlim * k;
-    p.z *= 1.0 - uSlim * k * front;
-    return p;
-  }
+  attribute vec3 goalPos;
+  attribute vec3 goalNormal;
 `;
 
 const bodyVert = /* glsl */`
-  ${DEFORM}
+  ${MORPH}
   varying vec3 vN;
   varying vec3 vView;
   varying float vY;
   void main() {
-    vec3 p = deform(position);
-    vY = position.y;
+    vec3 p = mix(position, goalPos, uSlim);
+    vY = p.y;
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vView = normalize(-mv.xyz);
-    vN = normalize(normalMatrix * normal);
+    vN = normalize(normalMatrix * normalize(mix(normal, goalNormal, uSlim)));
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -95,32 +96,40 @@ const bodyFrag = /* glsl */`
   varying vec3 vView;
   varying float vY;
   void main() {
-    float fres = pow(1.0 - abs(dot(normalize(vN), normalize(vView))), 2.2);
+    vec3 n = normalize(vN);
+    vec3 v = normalize(vView);
+    if (dot(n, v) < 0.0) n = -n;
+    // éclairage de studio (fixe par rapport à la caméra) : fait ressortir gras et muscles
+    vec3 L = normalize(vec3(-0.55, 0.65, 0.55));
+    vec3 L2 = normalize(vec3(0.7, 0.1, 0.4));
+    float diff = max(dot(n, L), 0.0);
+    float fill = max(dot(n, L2), 0.0) * 0.35;
+    float spec = pow(max(dot(reflect(-L, n), v), 0.0), 28.0) * 0.55;
+    float fres = pow(1.0 - max(dot(n, v), 0.0), 2.4);
     // rayures horizontales qui montent doucement
-    float s = fract(vY * 75.0 - uTime * 0.35);
-    float stripe = smoothstep(0.0, 0.12, s) * smoothstep(0.55, 0.38, s);
-    // fines lignes secondaires
-    float fine = smoothstep(0.92, 1.0, fract(vY * 300.0));
-    // faisceau de scan
+    float s = fract(vY * 110.0 - uTime * 0.35);
+    float stripe = smoothstep(0.0, 0.15, s) * smoothstep(0.75, 0.5, s);
     float beam = exp(-pow((vY - uScan) * 14.0, 2.0));
-    float flicker = 0.94 + 0.06 * sin(uTime * 23.0 + vY * 40.0);
-    vec3 col = mix(uColor, uColor2, fres * 0.6) ;
-    float a = (0.05 + stripe * 0.38 + fine * 0.10 + fres * 0.85 + beam * 0.9) * flicker;
-    col += vec3(0.6, 0.9, 1.0) * beam * 0.8;
-    gl_FragColor = vec4(col * a, a);
+    float flicker = 0.96 + 0.04 * sin(uTime * 23.0 + vY * 40.0);
+    float shade = 0.07 + 0.95 * diff + fill + spec;
+    vec3 col = uColor * shade * (0.55 + 0.45 * stripe);
+    col += uColor2 * fres * 0.75;
+    col += vec3(0.6, 0.9, 1.0) * beam * 0.7;
+    col *= flicker;
+    gl_FragColor = vec4(col, 1.0);
   }
 `;
 
 const pointsVert = /* glsl */`
-  ${DEFORM}
+  ${MORPH}
   uniform float uTime;
   uniform float uPixel;
   varying float vA;
   void main() {
-    vec3 p = deform(position) * 1.012;
+    vec3 p = mix(position, goalPos, uSlim) + normalize(mix(normal, goalNormal, uSlim)) * 0.004;
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     vA = 0.35 + 0.65 * step(0.97, fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453 + uTime * 0.15));
-    gl_PointSize = 1.6 * uPixel;
+    gl_PointSize = 1.3 * uPixel;
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -218,17 +227,29 @@ async function init() {
   const geo = await loadBodyGeometry();
   const group = new THREE.Group();
 
-  const bodyMat = new THREE.ShaderMaterial({ uniforms, vertexShader: bodyVert, fragmentShader: bodyFrag, side: THREE.DoubleSide, ...additive });
-  group.add(new THREE.Mesh(geo, bodyMat));
+  // 1) passe de profondeur invisible : seule la surface avant est dessinée ensuite
+  const depthMat = new THREE.ShaderMaterial({ uniforms, vertexShader: bodyVert, fragmentShader: 'void main(){ gl_FragColor = vec4(0.0); }', side: THREE.DoubleSide, colorWrite: false });
+  const depthMesh = new THREE.Mesh(geo, depthMat);
+  depthMesh.renderOrder = 0;
+  group.add(depthMesh);
+  // 2) le corps lumineux, éclairé (relief visible)
+  const bodyMat = new THREE.ShaderMaterial({ uniforms, vertexShader: bodyVert, fragmentShader: bodyFrag, side: THREE.DoubleSide, transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth, blending: THREE.AdditiveBlending });
+  const bodyMesh = new THREE.Mesh(geo, bodyMat);
+  bodyMesh.renderOrder = 1;
+  group.add(bodyMesh);
 
   // nuage de points sur la peau (1 point sur 3)
-  const src = geo.getAttribute('position');
-  const cnt = Math.floor(src.count / 3);
-  const pp = new Float32Array(cnt * 3);
-  for (let i = 0; i < cnt; i++) { pp[i * 3] = src.getX(i * 3); pp[i * 3 + 1] = src.getY(i * 3); pp[i * 3 + 2] = src.getZ(i * 3); }
+  const STEP = 5;
+  const pick = name => {
+    const a = geo.getAttribute(name), cnt = Math.floor(a.count / STEP), out = new Float32Array(cnt * 3);
+    for (let i = 0; i < cnt; i++) { out[i * 3] = a.getX(i * STEP); out[i * 3 + 1] = a.getY(i * STEP); out[i * 3 + 2] = a.getZ(i * STEP); }
+    return new THREE.BufferAttribute(out, 3);
+  };
   const pg = new THREE.BufferGeometry();
-  pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
-  group.add(new THREE.Points(pg, new THREE.ShaderMaterial({ uniforms, vertexShader: pointsVert, fragmentShader: pointsFrag, ...additive })));
+  for (const name of ['position', 'normal', 'goalPos', 'goalNormal']) pg.setAttribute(name, pick(name));
+  const pts = new THREE.Points(pg, new THREE.ShaderMaterial({ uniforms, vertexShader: pointsVert, fragmentShader: pointsFrag, ...additive }));
+  pts.renderOrder = 2;
+  group.add(pts);
   scene.add(group);
 
   // anneau de scan

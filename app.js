@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
