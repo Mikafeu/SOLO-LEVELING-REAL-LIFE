@@ -313,10 +313,11 @@ function frame(now) {
 /* ---------- API utilisée par app.js ---------- */
 const Holo = {
   /* container : élément où afficher ; progress : 0 → 1 vers l'objectif */
-  async mount(container, { progress = 0, mode = 'now' } = {}) {
+  async mount(container, { progress = 0, mode = 'now', tint = null } = {}) {
     S.container = container;
     S.mode = mode;
-    S.slimTarget = mode === 'goal' ? 1 : Math.max(0, Math.min(1, progress));
+    if (mode === 'goal') progress = 1;
+    S.slimTarget = Math.max(0, Math.min(1.35, progress));
     if (S.failed) return Holo.fallback(container);
     try {
       if (!S.renderer) {
@@ -335,10 +336,10 @@ const Holo = {
     S.ro = new ResizeObserver(resize);
     S.ro.observe(container);
     resize();
-    const goal = mode === 'goal';
-    S.uniforms.uColor.value.set(goal ? 0xffc35a : 0x2fc4ff);
-    S.uniforms.uColor2.value.set(goal ? 0xfff0c0 : 0x9fe9ff);
-    S.scanRing.material.color.set(goal ? 0xffd27a : 0x7fe0ff);
+    const t = tint || (mode === 'goal' ? ['#ffc35a', '#fff0c0', '#ffd27a'] : ['#2fc4ff', '#9fe9ff', '#7fe0ff']);
+    S.uniforms.uColor.value.set(t[0]);
+    S.uniforms.uColor2.value.set(t[1]);
+    S.scanRing.material.color.set(t[2]);
     if (!S.running) { S.running = true; S.last = 0; requestAnimationFrame(frame); }
   },
   setProgress(progress, mode) {

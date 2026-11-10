@@ -6,19 +6,19 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
 
-/* ---------- Les 5 stats ---------- */
+/* ---------- Les 4 stats (la Progression est calculée à part) ---------- */
 const STATS = [
-  { key: 'physique', name: 'Physique', icon: '💪', desc: 'Corps, énergie, endurance' },
-  { key: 'concentration', name: 'Concentration', icon: '🎯', desc: 'Rester focus longtemps' },
+  { key: 'physique', name: 'Physique', icon: '💪', desc: 'Tout le corps : force, énergie, endurance' },
+  { key: 'concentration', name: 'Concentration', icon: '🎯', desc: 'Jugée sur ce que tu fais de tes journées' },
   { key: 'intelligence', name: 'Intelligence', icon: '🧠', desc: 'Savoir, réflexion, créativité' },
-  { key: 'progression', name: 'Progression', icon: '📈', desc: "Capacité à m'améliorer" },
   { key: 'discipline', name: 'Discipline', icon: '⚔️', desc: 'Avancer, être régulier' },
 ];
+const DEFAULT_START = '2026-12-01'; // jour 0 de l'aventure
 const STAT_KEYS = STATS.map(s => s.key);
 const MEAL_KEYS = ['matin', 'midi', 'soir', 'collation'];
 const statByKey = Object.fromEntries(STATS.map(s => [s.key, s]));
@@ -64,10 +64,10 @@ const RANKS = [
 
 const DEFAULT_ACTIVITIES = [
   { id: 'live', name: 'Live (Twitch/TikTok)', icon: '🎥', stats: ['concentration', 'discipline'], difficulty: 'normal' },
-  { id: 'clips', name: 'Clips / montage', icon: '✂️', stats: ['intelligence', 'progression'], difficulty: 'normal' },
+  { id: 'clips', name: 'Clips / montage', icon: '✂️', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
   { id: 'sport', name: 'Sport', icon: '🏋️', stats: ['physique', 'discipline'], difficulty: 'normal' },
   { id: 'travail', name: 'Travail', icon: '💼', stats: ['discipline', 'physique'], difficulty: 'normal' },
-  { id: 'lecture', name: 'Apprentissage / lecture', icon: '📚', stats: ['intelligence', 'progression'], difficulty: 'normal' },
+  { id: 'lecture', name: 'Apprentissage / lecture', icon: '📚', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
 ];
 
 /* =========================================================
@@ -108,23 +108,31 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 function freshState() {
   return {
     schema: SCHEMA,
-    playerName: 'Chasseur',
+    playerName: 'Charisme',
     createdAt: new Date().toISOString(),
+    startDate: DEFAULT_START,
     lastExportAt: null,
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
     logs: [],
-    body: { startWeight: 96.5, goalWeight: 86, heightCm: null, age: null, waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
+    body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: null, age: null, waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
     weights: [],
     meals: [],
+    journals: [],
+    seenReports: [],
   };
 }
+/* l'ancienne stat "Progression" est devenue un calcul global : ses points vont à la Concentration */
+const migrateStats = arr => [...new Set((Array.isArray(arr) ? arr : []).map(k => (k === 'progression' ? 'concentration' : k)).filter(k => STAT_KEYS.includes(k)))];
 
 /* Nettoie / vérifie des données (au chargement et à l'import). */
 function sanitizeState(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('Fichier illisible');
   if (!Array.isArray(raw.activities) || !Array.isArray(raw.logs)) throw new Error('Ce fichier ne ressemble pas à une sauvegarde du Système');
   const s = freshState();
-  s.playerName = typeof raw.playerName === 'string' && raw.playerName.trim() ? raw.playerName.trim().slice(0, 40) : 'Chasseur';
+  s.playerName = typeof raw.playerName === 'string' && raw.playerName.trim() ? raw.playerName.trim().slice(0, 40) : 'Charisme';
+  if (s.playerName === 'Chasseur') s.playerName = 'Charisme';
+  if (isValidKey(raw.startDate)) s.startDate = raw.startDate;
+  s.seenReports = Array.isArray(raw.seenReports) ? raw.seenReports.filter(x => typeof x === 'string').slice(-48) : [];
   s.createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : s.createdAt;
   s.lastExportAt = typeof raw.lastExportAt === 'string' ? raw.lastExportAt : null;
   s.activities = raw.activities
@@ -133,7 +141,7 @@ function sanitizeState(raw) {
       id: typeof a.id === 'string' && a.id ? a.id : uid(),
       name: a.name.slice(0, 40),
       icon: typeof a.icon === 'string' && a.icon ? a.icon.slice(0, 8) : '⭐',
-      stats: (Array.isArray(a.stats) ? a.stats : []).filter(k => STAT_KEYS.includes(k)),
+      stats: migrateStats(a.stats),
       difficulty: DIFFICULTIES.some(d => d.key === a.difficulty) ? a.difficulty : 'normal',
     }));
   s.logs = raw.logs
@@ -147,9 +155,11 @@ function sanitizeState(raw) {
       icon: typeof l.icon === 'string' ? l.icon.slice(0, 8) : '⭐',
       minutes: Number.isFinite(l.minutes) && l.minutes > 0 ? Math.min(Math.round(l.minutes), 24 * 60) : null,
       note: typeof l.note === 'string' ? l.note.slice(0, 280) : '',
-      stats: (Array.isArray(l.stats) ? l.stats : []).filter(k => STAT_KEYS.includes(k)),
+      stats: migrateStats(l.stats),
       difficulty: DIFFICULTIES.some(d => d.key === l.difficulty) ? l.difficulty : 'normal',
       xp: Number.isFinite(l.xp) && l.xp >= 0 ? Math.round(l.xp) : 0,
+      quality: Number.isFinite(l.quality) && l.quality >= 0.3 && l.quality <= 2 ? l.quality : 1,
+      verdict: typeof l.verdict === 'string' ? l.verdict.slice(0, 160) : '',
     }));
   const okKg = v => Number.isFinite(v) && v >= 30 && v <= 300;
   const inR = (v, a, b) => Number.isFinite(v) && v >= a && v <= b;
@@ -157,6 +167,9 @@ function sanitizeState(raw) {
     const rb = raw.body;
     if (okKg(rb.startWeight)) s.body.startWeight = rb.startWeight;
     if (okKg(rb.goalWeight)) s.body.goalWeight = rb.goalWeight;
+    if (inR(rb.goalFat, 5, 40)) s.body.goalFat = rb.goalFat;
+    if (inR(rb.goalMuscle, 20, 60)) s.body.goalMuscle = rb.goalMuscle;
+    if (isValidKey(rb.goalDate)) s.body.goalDate = rb.goalDate;
     if (inR(rb.heightCm, 120, 230)) s.body.heightCm = rb.heightCm;
     if (inR(rb.age, 10, 100)) s.body.age = rb.age;
     if (inR(rb.waistCm, 50, 200)) s.body.waistCm = rb.waistCm;
@@ -179,6 +192,13 @@ function sanitizeState(raw) {
       name: m.name.slice(0, 120), grams: Math.min(5000, num(m.grams)),
       kcal: num(m.kcal), p: num(m.p), g: num(m.g), l: num(m.l),
       src: typeof m.src === 'string' ? m.src.slice(0, 10) : 'manuel',
+    }));
+  s.journals = (Array.isArray(raw.journals) ? raw.journals : [])
+    .filter(j => j && isValidKey(j.date) && typeof j.text === 'string')
+    .map(j => ({
+      id: typeof j.id === 'string' ? j.id : uid(), date: j.date, text: j.text.slice(0, 1000),
+      score: Number.isFinite(j.score) ? Math.max(-3, Math.min(3, j.score)) : 0,
+      verdict: typeof j.verdict === 'string' ? j.verdict.slice(0, 300) : '',
     }));
   return s;
 }
@@ -216,7 +236,7 @@ function entryXp(minutes, difficulty) {
 }
 function entryPoints(log) {
   const base = log.minutes ? Math.min(log.minutes, RULES.entryMaxMinutes) / RULES.minutesPerPoint : RULES.donePoints;
-  return base * diffMult(log.difficulty);
+  return base * diffMult(log.difficulty) * (log.quality || 1);
 }
 
 /* XP nécessaire pour passer du niveau n au niveau n+1.
@@ -245,15 +265,20 @@ function gradeFor(v) {
 }
 const totalXp = () => state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP;
 
-/* Recalcule les stats en "rejouant" chaque jour depuis la 1re activité.
-   Ainsi, supprimer une entrée corrige tout automatiquement. */
+/* Recalcule les stats en "rejouant" chaque jour depuis la 1re donnée.
+   Ainsi, supprimer une entrée corrige tout automatiquement.
+   Garde aussi l'historique jour par jour (graphique, jour 0, bilans). */
+let _seriesCache = { key: '', out: null };
 function computeStats(logs, today) {
-  const values = {}, last = {}, weekAgo = {};
-  STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; weekAgo[k] = RULES.statStart; });
+  const nd = nutritionDays(today);
+  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',');
+  if (logs === state.logs && _seriesCache.key === key) return _seriesCache.out;
+  const values = {}, last = {};
+  STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; });
+  const history = new Map(); // date → {stat: valeur}
 
   const byDay = new Map();
   let first = today;
-  if (!logs.length && !nutritionDays(today).size) return { values, last, weekAgo };
   for (const l of logs) {
     if (l.date > today) continue;
     if (l.date < first) first = l.date;
@@ -264,17 +289,28 @@ function computeStats(logs, today) {
   }
   for (const o of byDay.values()) o.discipline = (o.discipline || 0) + RULES.regularityBonus;
   // journée de nutrition validée = 1 point de Discipline
-  for (const d of nutritionDays(today)) {
+  for (const d of nd) {
     const o = byDay.get(d) || {};
     o.discipline = (o.discipline || 0) + 1;
     byDay.set(d, o);
     if (d < first) first = d;
   }
+  // journal du jour : la journée racontée est jugée (Concentration)
+  const penalty = new Map();
+  for (const j of state.journals) {
+    if (j.date > today) continue;
+    if (j.date < first) first = j.date;
+    if (j.score > 0) {
+      const o = byDay.get(j.date) || {};
+      o.concentration = (o.concentration || 0) + j.score * 0.8;
+      o.discipline = (o.discipline || 0) + 0.3;
+      byDay.set(j.date, o);
+    } else if (j.score < 0) penalty.set(j.date, -j.score);
+  }
+  const start = state.startDate || first;
+  if (start < first) first = start;
 
-  const weekAgoKey = addDays(today, -7);
-  let day = first;
-  let guard = 0;
-  if (weekAgoKey < first) STAT_KEYS.forEach(k => { weekAgo[k] = RULES.statStart; });
+  let day = first, guard = 0;
   while (day <= today && guard++ < 40000) {
     const o = byDay.get(day);
     for (const k of STAT_KEYS) {
@@ -287,11 +323,16 @@ function computeStats(logs, today) {
         values[k] = Math.max(RULES.statMin, values[k] * (1 - RULES.decayRate));
       }
     }
-    if (day === weekAgoKey) STAT_KEYS.forEach(k => { weekAgo[k] = values[k]; });
+    if (penalty.has(day)) values.concentration = Math.max(RULES.statMin, values.concentration - 0.15 * penalty.get(day));
+    history.set(day, { ...values });
     day = addDays(day, 1);
   }
-  return { values, last, weekAgo };
+  const base = { ...history.get(addDays(start, -1)) || Object.fromEntries(STAT_KEYS.map(k => [k, RULES.statStart])) };
+  const out = { values, last, history, first, start, base };
+  if (logs === state.logs) _seriesCache = { key, out };
+  return out;
 }
+const powerOf = v => STAT_KEYS.reduce((s, k) => s + v[k], 0) / STAT_KEYS.length;
 
 function activeDays() {
   return new Set(state.logs.map(l => l.date));
@@ -365,12 +406,54 @@ const confirmBox = (title, text, okLabel = 'Confirmer', danger = false) =>
     buttons: [{ label: okLabel, value: true, cls: danger ? 'danger' : 'primary' }, { label: 'Annuler', value: false, cls: 'ghost' }],
   }).then(v => v === true);
 
+/* Grande animation "[SYSTÈME]" : quête accomplie, journée jugée… */
+function celebrate({ kind = 'win', title = '', icon = '', big = '', count = null, sub = '', chips = [], lines = [] }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = `celebrate c-${kind}`;
+    ov.innerHTML = `
+      <div class="cel-rays"></div>
+      <div class="cel-flash"></div>
+      <div class="cel-parts">${Array.from({ length: 26 }, (_, i) => `<i style="--a:${(i * 360) / 26}deg;--d:${(i % 5) * 60}ms;--r:${110 + (i % 4) * 35}px"></i>`).join('')}</div>
+      <div class="cel-box">
+        <div class="cel-tag">[SYSTÈME]</div>
+        ${icon ? `<div class="cel-icon">${esc(icon)}</div>` : ''}
+        <div class="cel-title">${esc(title)}</div>
+        <div class="cel-big">${esc(big)}</div>
+        ${sub ? `<div class="cel-sub">${esc(sub)}</div>` : ''}
+        ${chips.length ? `<div class="cel-chips">${chips.map((c, i) => `<span style="animation-delay:${450 + i * 120}ms">▲ ${esc(c)}</span>`).join('')}</div>` : ''}
+        ${lines.map(l => `<div class="cel-line">${esc(l)}</div>`).join('')}
+        <div class="cel-hint">Touche pour continuer</div>
+      </div>`;
+    document.body.appendChild(ov);
+    const bigEl = ov.querySelector('.cel-big');
+    if (count != null && bigEl) {
+      const t0 = performance.now();
+      const step = now => {
+        const k = Math.min(1, (now - t0) / 700);
+        bigEl.textContent = `+${Math.round(count * (1 - Math.pow(1 - k, 3)))} XP`;
+        if (k < 1 && ov.isConnected) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
+    let done = false;
+    const close = () => {
+      if (done) return;
+      done = true;
+      ov.classList.add('out');
+      setTimeout(() => { ov.remove(); resolve(); }, 280);
+    };
+    setTimeout(() => ov.addEventListener('click', close), 350);
+    setTimeout(close, lines.length ? 4200 : 2800);
+  });
+}
+
 /* =========================================================
    Navigation
    ========================================================= */
 const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', history: 'Journal des quêtes', settings: 'Réglages' };
 let currentTab = 'home';
-const ui = { calMonth: null, selectedDay: null, holoMode: 'now', photoPose: 'face', mealDay: null };
+const ui = { calMonth: null, selectedDay: null, holoMode: 'now', holoRank: null, day0: false, statsTab: 'stats', chartKey: 'power', chartTf: 'J', photoPose: 'face', mealDay: null };
 
 function go(tab) {
   currentTab = tab;
@@ -392,7 +475,8 @@ function render() {
 function mountHolo() {
   const el = $('#holo');
   if (!el) return;
-  const go3d = () => window.Holo && window.Holo.mount(el, { progress: bodyProgress().progress, mode: ui.holoMode });
+  const v = holoView();
+  const go3d = () => window.Holo && window.Holo.mount(el, { progress: v.progress, tint: v.tint });
   if (window.Holo) go3d();
   else document.addEventListener('holo-ready', go3d, { once: true });
 }
@@ -405,39 +489,50 @@ function renderHome() {
   const xp = totalXp();
   const lv = levelInfo(xp);
   const rank = rankFor(lv.level);
-  const { values, last, weekAgo } = computeStats(state.logs, today);
-  const st = streakInfo(today);
+  const st = computeStats(state.logs, today);
+  const shown = ui.day0 ? st.base : st.values;
+  const streak = streakInfo(today);
   const pct = Math.min(100, (lv.into / lv.need) * 100);
+  const started = today >= st.start;
+  const journal = state.journals.find(j => j.date === today);
 
   const statsHtml = STATS.map(s => {
-    const v = values[s.key];
-    const diff = v - weekAgo[s.key];
-    const inactive = last[s.key] ? daysBetween(last[s.key], today) : null;
+    const v = shown[s.key];
+    const diff = st.values[s.key] - st.base[s.key];
+    const inactive = st.last[s.key] ? daysBetween(st.last[s.key], today) : null;
     let foot;
-    if (inactive === null) foot = `<span>Pas encore entraînée</span>`;
+    if (ui.day0) foot = `<span>Valeur au jour 0</span>`;
+    else if (inactive === null) foot = `<span>Pas encore entraînée</span>`;
     else if (inactive > RULES.decayGraceDays) foot = `<span class="decay-warn">⚠ Inactive depuis ${inactive} j · en baisse</span>`;
     else if (inactive === 0) foot = `<span>Entraînée aujourd'hui</span>`;
     else foot = `<span>Dernière fois il y a ${inactive} j</span>`;
-    const trend = Math.abs(diff) < 0.05 ? `<span>= sur 7 j</span>`
-      : diff > 0 ? `<span class="trend-up">▲ +${fmtStat(diff)} sur 7 j</span>`
-      : `<span class="trend-down">▼ ${fmtStat(diff)} sur 7 j</span>`;
+    const trend = ui.day0 ? '' : !started ? `<span>Départ le ${fmtDayShort(st.start)}</span>`
+      : Math.abs(diff) < 0.05 ? `<span>= depuis le jour 0</span>`
+      : diff > 0 ? `<span class="trend-up">▲ +${fmtStat(diff)} depuis le jour 0</span>`
+      : `<span class="trend-down">▼ ${fmtStat(diff)} depuis le jour 0</span>`;
+    const plus = s.key === 'concentration' && !ui.day0
+      ? `<button type="button" class="stat-plus ${journal ? 'done' : ''}" data-action="journal" aria-label="Raconter ma journée">${journal ? '✓' : '＋'}</button>` : '';
     return `
       <div class="stat">
         <div class="stat-row">
           <div class="stat-icon">${s.icon}</div>
           <div class="stat-name">${s.name}<small>${s.desc}</small></div>
+          ${plus}
           <div class="stat-value">${fmtStat(v)}</div>
           <div class="stat-grade">${gradeFor(v)}</div>
         </div>
         <div class="bar thin"><span style="width:${v}%"></span></div>
         <div class="stat-foot">${foot}${trend}</div>
+        ${s.key === 'concentration' && journal && !ui.day0 ? `<div class="stat-judge">[SYSTÈME] Journée jugée ${journal.score > 0 ? '+' : ''}${String(journal.score).replace('.', ',')} · ${esc(journal.verdict)}</div>` : ''}
       </div>`;
   }).join('');
 
   const daysSinceExport = state.lastExportAt ? daysBetween(dateKey(new Date(state.lastExportAt)), today) : null;
   const needReminder = state.logs.length >= 5 && (daysSinceExport === null || daysSinceExport >= 7);
+  const prog = progressionInfo(today, st);
 
   return `
+    ${ui.day0 ? `<div class="day0-banner">[SYSTÈME] ARCHIVE DU JOUR 0 · ${esc(fmtDayLong(st.start))} <button type="button" data-action="day0">Revenir</button></div>` : ''}
     ${renderBodyPanel(today)}
 
     <section class="panel">
@@ -449,6 +544,10 @@ function renderHome() {
           <div class="level-line"><span class="level-label">NIVEAU</span><span class="level-num">${lv.level}</span></div>
         </div>
       </div>
+      <div class="rank-chips" role="group" aria-label="Voir mon corps à chaque rang">
+        <span class="rank-chips-lab">Voir mon corps :</span>
+        ${['E', 'D', 'C', 'B', 'A', 'S'].map(r => `<button type="button" class="rchip r-${r} ${ui.holoRank === r ? 'on' : ''} ${rank.letter === r ? 'mine' : ''}" data-rank-preview="${r}">${r}</button>`).join('')}
+      </div>
       <div class="bar xp"><span style="width:${pct}%"></span></div>
       <div class="bar-caption"><span>XP ${fmtNum(lv.into)} / ${fmtNum(lv.need)}</span><span>Total ${fmtNum(xp)}</span></div>
     </section>
@@ -457,13 +556,13 @@ function renderHome() {
 
     <section class="panel">
       <div class="streak">
-        <div class="streak-flame ${st.current ? '' : 'off'}">🔥</div>
+        <div class="streak-flame ${streak.current ? '' : 'off'}">🔥</div>
         <div>
-          <div class="streak-num">${st.current} jour${st.current > 1 ? 's' : ''}</div>
-          <div class="streak-text">${st.current
-            ? (st.doneToday ? 'Série active — validée aujourd\'hui ✓' : 'Série en danger : fais une activité aujourd\'hui !')
+          <div class="streak-num">${streak.current} jour${streak.current > 1 ? 's' : ''}</div>
+          <div class="streak-text">${streak.current
+            ? (streak.doneToday ? 'Série active — validée aujourd\'hui ✓' : 'Série en danger : fais une activité aujourd\'hui !')
             : 'Aucune série en cours. Une activité aujourd\'hui la lance.'}
-            · Record : ${st.best} j</div>
+            · Record : ${streak.best} j</div>
         </div>
       </div>
     </section>
@@ -476,16 +575,18 @@ function renderHome() {
     </section>` : ''}
 
     <section class="panel">
-      <div class="panel-head">
-        <div class="panel-title">Statistiques</div>
-        <div class="panel-sub">sur 100</div>
+      <div class="seg stats-tabs">
+        <button type="button" class="${ui.statsTab !== 'chart' ? 'on' : ''}" data-stats-tab="stats">Statistiques</button>
+        <button type="button" class="${ui.statsTab === 'chart' ? 'on' : ''}" data-stats-tab="chart">📈 Graphique</button>
       </div>
-      ${statsHtml}
+      ${ui.statsTab === 'chart' ? renderChart(st, today) : statsHtml}
     </section>
+
+    ${renderProgression(prog, started, st)}
 
     <section class="panel">
       <div class="kpis">
-        <div class="kpi"><b>${st.totalDays}</b><span>jours actifs</span></div>
+        <div class="kpi"><b>${streak.totalDays}</b><span>jours actifs</span></div>
         <div class="kpi"><b>${state.logs.length}</b><span>quêtes</span></div>
         <div class="kpi"><b>${fmtNum(state.logs.reduce((s, l) => s + (l.minutes || 0), 0) / 60)}</b><span>heures</span></div>
       </div>
@@ -493,6 +594,114 @@ function renderHome() {
 
     <button class="btn primary block" data-go="today">⚔ Enregistrer une quête</button>
   `;
+}
+
+function renderProgression(prog, started, st) {
+  const pc = v => Math.round(v * 100);
+  return `
+    <section class="panel prog prog-${prog.grade}">
+      <div class="prog-head">
+        <div><div class="panel-title">Progression</div>
+        <div class="small muted" style="margin-top:4px">${started ? `Jour ${prog.day + 1} · sur toute l'année depuis le jour 0` : `L'aventure commence le ${esc(fmtDayLong(st.start))}`}</div></div>
+        <div class="prog-grade">${prog.grade}</div>
+      </div>
+      <div class="prog-bar"><span style="width:${Math.max(2, prog.score)}%"></span><i></i></div>
+      <div class="prog-cap"><span><b>${prog.score.toFixed(1).replace('.', ',')}</b> / 100</span><span>${prog.next ? `Rang ${prog.next[0]} à ${prog.next[1]}` : 'Rang maximal'}</span></div>
+      <div class="prog-parts">
+        <span>📊 Stats ${prog.statGain >= 0 ? '+' : ''}${fmtStat(prog.statGain)} pts</span>
+        <span>🧬 Corps ${pc(prog.parts.corps)} %</span>
+        <span>🍽️ Nutrition ${pc(prog.parts.nutrition)} %</span>
+      </div>
+    </section>`;
+}
+
+/* ---------- Graphique façon trading (Jour / Mois / Année) ---------- */
+const CHART_SERIES = [
+  { key: 'power', label: 'Puissance' }, { key: 'physique', label: 'Physique' }, { key: 'concentration', label: 'Concentration' },
+  { key: 'intelligence', label: 'Intelligence' }, { key: 'discipline', label: 'Discipline' }, { key: 'xp', label: 'XP' }, { key: 'poids', label: 'Poids' },
+];
+function dailySeries(key, st, today) {
+  const out = [];
+  if (key === 'xp') {
+    const perDay = new Map();
+    for (const l of state.logs) perDay.set(l.date, (perDay.get(l.date) || 0) + l.xp);
+    for (const d of nutritionDays(today)) perDay.set(d, (perDay.get(d) || 0) + NUTRI_XP);
+    let cum = 0;
+    for (const d of st.history.keys()) { cum += perDay.get(d) || 0; out.push({ d, v: cum }); }
+    return out;
+  }
+  if (key === 'poids') {
+    if (!state.weights.length) return out;
+    let cur = state.body.startWeight, i = 0;
+    const ws = state.weights;
+    let d = ws[0].date < st.first ? ws[0].date : st.first;
+    while (d <= today) {
+      while (i < ws.length && ws[i].date <= d) { cur = ws[i].kg; i++; }
+      out.push({ d, v: cur });
+      d = addDays(d, 1);
+    }
+    return out;
+  }
+  for (const [d, vals] of st.history) out.push({ d, v: key === 'power' ? powerOf(vals) : vals[key] });
+  return out;
+}
+function candlesOf(pts, tf) {
+  const groups = new Map();
+  pts.forEach((p, i) => {
+    const k = tf === 'J' ? p.d : tf === 'M' ? p.d.slice(0, 7) : p.d.slice(0, 4);
+    if (!groups.has(k)) groups.set(k, { k, o: i ? pts[i - 1].v : p.v, h: -Infinity, l: Infinity, c: p.v });
+    const g = groups.get(k);
+    g.h = Math.max(g.h, p.v, g.o); g.l = Math.min(g.l, p.v, g.o); g.c = p.v;
+  });
+  const list = [...groups.values()];
+  return list.slice(tf === 'J' ? -30 : tf === 'M' ? -12 : -10);
+}
+function renderChart(st, today) {
+  const key = ui.chartKey || 'power', tf = ui.chartTf || 'J';
+  const pts = dailySeries(key, st, today);
+  const cs = candlesOf(pts, tf);
+  const inverse = key === 'poids';
+  const head = `
+    <div class="chart-keys">${CHART_SERIES.map(c => `<button type="button" class="chip small ${c.key === key ? 'on' : ''}" data-chart-key="${c.key}">${c.label}</button>`).join('')}</div>
+    <div class="seg chart-tf">${[['J', 'Jour'], ['M', 'Mois'], ['A', 'Année']].map(([k, l]) => `<button type="button" class="${k === tf ? 'on' : ''}" data-chart-tf="${k}">${l}</button>`).join('')}</div>`;
+  if (cs.length < 2) return head + `<div class="empty"><span class="sys">[SYSTÈME]</span>Pas encore assez de données. Le graphique se remplit jour après jour.</div>`;
+  const W = 340, H = 190, PL = 6, PR = 44, PT = 10, PB = 22;
+  let lo = Math.min(...cs.map(c => c.l)), hi = Math.max(...cs.map(c => c.h));
+  if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const n = cs.length, step = (W - PL - PR) / n, bw = Math.max(3, Math.min(18, step * 0.62));
+  const Y = v => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
+  const fmtV = v => key === 'xp' ? fmtNum(v) : (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
+  const lab = c => tf === 'J' ? String(+c.k.slice(8)) : tf === 'M' ? MONTHS_SHORT[+c.k.slice(5) - 1] : c.k;
+  const every = Math.ceil(n / 6);
+  const body = cs.map((c, i) => {
+    const x = PL + step * i + step / 2;
+    const up = inverse ? c.c <= c.o : c.c >= c.o;
+    const y1 = Y(Math.max(c.o, c.c)), y2 = Y(Math.min(c.o, c.c));
+    return `<g class="cdl ${up ? 'up' : 'down'}" style="animation-delay:${i * 25}ms">
+      <line x1="${x}" x2="${x}" y1="${Y(c.h).toFixed(1)}" y2="${Y(c.l).toFixed(1)}"/>
+      <rect x="${(x - bw / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1.5, y2 - y1).toFixed(1)}" rx="1.5"/>
+      ${i % every === 0 ? `<text x="${x}" y="${H - 6}" class="cx">${lab(c)}</text>` : ''}
+    </g>`;
+  }).join('');
+  const last = cs[n - 1], prev = cs[n - 2];
+  const ch = last.c - last.o, chPrev = prev.c - prev.o;
+  const pctCh = last.o ? (ch / Math.abs(last.o)) * 100 : 0;
+  const good = inverse ? ch < 0 : ch > 0;
+  const better = inverse ? ch < chPrev : ch > chPrev;
+  const per = tf === 'J' ? "aujourd'hui" : tf === 'M' ? 'ce mois-ci' : 'cette année';
+  const perPrev = tf === 'J' ? 'hier' : tf === 'M' ? 'le mois dernier' : "l'année dernière";
+  const grid = [0, 0.5, 1].map(f => { const v = lo + (hi - lo) * f; return `<line x1="${PL}" x2="${W - PR}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" class="cg"/><text x="${W - PR + 4}" y="${(Y(v) + 3).toFixed(1)}" class="cy">${fmtV(v)}</text>`; }).join('');
+  return head + `
+    <div class="chart-sum ${good ? 'good' : Math.abs(ch) < 1e-9 ? '' : 'bad'}">
+      <b>${fmtV(last.c)}</b> <span>${ch >= 0 ? '▲ +' : '▼ '}${fmtV(Math.abs(ch)) === '0,0' && key !== 'xp' ? ch.toFixed(2).replace('.', ',') : (ch >= 0 ? '' : '−') + fmtV(Math.abs(ch))} (${pctCh >= 0 ? '+' : ''}${pctCh.toFixed(1).replace('.', ',')} %) ${per}</span>
+    </div>
+    <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Graphique">
+      ${grid}
+      <line x1="${PL}" x2="${W - PR}" y1="${Y(last.c).toFixed(1)}" y2="${Y(last.c).toFixed(1)}" class="clast"/>
+      ${body}
+    </svg>
+    <div class="small ${better ? 'trend-up' : 'muted'}" style="margin-top:6px">${better ? `🔥 Tu te surpasses : mieux que ${perPrev}.` : `Moins bien que ${perPrev}. Le Système attend mieux.`}</div>`;
 }
 
 /* =========================================================
@@ -548,39 +757,70 @@ function composition(kg) {
 }
 const fmtPct = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
 
+/* Aperçu du corps par rang de Charisme, calculé selon TON objectif :
+   E = départ, D/C/B = étapes, A = objectif atteint, S = au-delà (plus sec, plus musclé). */
+const RANK_BODY = { E: 0, D: 0.25, C: 0.5, B: 0.75, A: 1, S: 1.3 };
+const RANK_TINT = {
+  E: ['#8fb0c8', '#d8ecff', '#a9c6dd'], D: ['#3fe0a0', '#c8ffe8', '#6fffc0'], C: ['#2fc4ff', '#9fe9ff', '#7fe0ff'],
+  B: ['#4f7dff', '#b8ccff', '#8aa8ff'], A: ['#a77bff', '#e3d4ff', '#c4a6ff'], S: ['#ffc35a', '#fff0c0', '#ffd27a'],
+};
+function holoView() {
+  const b = bodyProgress();
+  if (ui.day0) {
+    const comp = composition(b.start);
+    comp.src = 'estimation';
+    return { kind: 'day0', label: 'JOUR 0', progress: 0, kg: b.start, comp, tint: RANK_TINT.E };
+  }
+  if (ui.holoRank) {
+    const r = ui.holoRank, p = RANK_BODY[r];
+    const kg = r === 'S' ? b.goal : b.start - Math.min(1, p) * (b.start - b.goal);
+    const c0 = composition(b.start), gf = state.body.goalFat, gm = state.body.goalMuscle;
+    const t = Math.min(1, p);
+    const comp = { fat: c0.fat + (gf - c0.fat) * t, muscle: c0.muscle + (gm - c0.muscle) * t, src: 'objectif' };
+    if (r === 'S') { comp.fat = Math.max(7, gf - 4); comp.muscle = gm + 2; }
+    return { kind: 'rank', rank: r, label: `RANG ${r}`, progress: p, kg, comp, tint: RANK_TINT[r] };
+  }
+  return { kind: 'now', label: '', progress: b.progress, kg: b.cur, comp: composition(null), tint: null };
+}
+
 function renderBodyPanel(today) {
   const b = bodyProgress();
+  const v = holoView();
   const pct = Math.round(b.progress * 1000) / 10;
   const monthKey = today.slice(0, 7);
   const photoThisMonth = bodyPhotos().some(p => p.date.slice(0, 7) === monthKey);
   const lastW = state.weights[state.weights.length - 1];
   const sinceW = lastW ? daysBetween(lastW.date, today) : null;
-  const goalMode = ui.holoMode === 'goal';
   const done = b.progress >= 1;
-  const comp = composition(goalMode ? b.goal : null);
+  const comp = v.comp;
+  const preview = v.kind !== 'now';
+  const lost = b.start - v.kg;
+  const rankDesc = v.kind === 'rank' ? (v.rank === 'S' ? 'Au-delà : physique de mannequin pro' : v.rank === 'A' ? `Objectif ${fmtKg(state.body.goalWeight)} kg · < ${state.body.goalFat + 1} % de graisse` : v.rank === 'E' ? 'Point de départ' : `${Math.round(RANK_BODY[v.rank] * 100)} % du chemin`) : '';
   return `
-    <section class="panel lab">
+    <section class="panel lab ${v.kind === 'rank' ? 'rank-' + v.rank : ''}">
       <div class="lab-head">
-        <span class="lab-tag">[SYSTÈME] SCAN CORPOREL</span>
-        <span class="lab-live"><i></i>EN DIRECT</span>
+        <span class="lab-tag">[SYSTÈME] ${v.kind === 'day0' ? 'ARCHIVE · JOUR 0' : v.kind === 'rank' ? 'SIMULATION · RANG ' + v.rank : 'SCAN CORPOREL'}</span>
+        <span class="lab-live ${preview ? 'sim' : ''}"><i></i>${preview ? 'SIMULATION' : 'EN DIRECT'}</span>
       </div>
-      <div class="holo-wrap ${goalMode ? 'goal' : ''}">
+      <div class="holo-wrap ${preview ? 'preview' : ''}" ${v.tint ? `style="--tint:${v.tint[0]}"` : ''}>
         <div id="holo" class="holo"><div class="holo-loading">Initialisation du scan…</div></div>
         <span class="hc tl"></span><span class="hc tr"></span><span class="hc bl"></span><span class="hc br"></span>
         <div class="hud hud-left">
-          <div><small>${goalMode ? 'CIBLE' : 'POIDS'}</small><b>${fmtKg(goalMode ? b.goal : b.cur)}</b><i>kg</i></div>
+          <div><small>${v.kind === 'rank' ? 'POIDS VISÉ' : 'POIDS'}</small><b>${fmtKg(v.kg)}</b><i>kg</i></div>
           <div><small>DÉPART</small><b>${fmtKg(b.start)}</b><i>kg</i></div>
-          <div><small>GRAISSE${comp.src === 'balance' ? '' : ' ≈'}</small><b class="fat">${fmtPct(comp.fat)}</b><i>%</i></div>
+          <div><small>GRAISSE${comp.src === 'balance' && !preview ? '' : ' ≈'}</small><b class="fat">${fmtPct(comp.fat)}</b><i>%</i></div>
         </div>
         <div class="hud hud-right">
-          <div><small>PERDU</small><b class="${b.lost > 0 ? 'good' : ''}">${b.lost > 0 ? '−' : ''}${fmtKg(Math.abs(b.lost))}</b><i>kg</i></div>
-          <div><small>RESTANT</small><b>${fmtKg(b.left)}</b><i>kg</i></div>
-          <div><small>MUSCLES${comp.src === 'balance' && state.weights.some(w => w.muscle != null) ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
+          <div><small>PERDU</small><b class="${lost > 0 ? 'good' : ''}">${lost > 0 ? '−' : ''}${fmtKg(Math.abs(lost))}</b><i>kg</i></div>
+          <div><small>RESTANT</small><b>${fmtKg(Math.max(0, v.kg - b.goal))}</b><i>kg</i></div>
+          <div><small>MUSCLES${comp.src === 'balance' && !preview && state.weights.some(w => w.muscle != null) ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
         </div>
-        <div class="hud-src">${goalMode ? 'COMPOSITION VISÉE' : comp.src === 'balance' ? 'SOURCE : BALANCE' : comp.src === 'mensurations' ? 'SOURCE : MENSURATIONS' : 'ESTIMATION · PHOTOS'}</div>
+        <div class="hud-src">${v.kind === 'rank' ? esc(rankDesc.toUpperCase()) : v.kind === 'day0' ? esc(fmtDayLong(state.startDate).toUpperCase()) : comp.src === 'balance' ? 'SOURCE : BALANCE' : comp.src === 'mensurations' ? 'SOURCE : MENSURATIONS' : 'ESTIMATION · PHOTOS'}</div>
+        ${v.kind === 'rank' ? `<div class="holo-rank-big">${v.rank}</div>` : ''}
         <div class="holo-mode">
-          <button type="button" class="${goalMode ? '' : 'on'}" data-holo-mode="now">Maintenant</button>
-          <button type="button" class="${goalMode ? 'on' : ''}" data-holo-mode="goal">Objectif ${fmtKg(b.goal)} kg</button>
+          <button type="button" class="${v.kind === 'now' ? 'on' : ''}" data-holo-mode="now">Maintenant</button>
+          <button type="button" class="${v.kind === 'rank' && v.rank === 'A' ? 'on' : ''}" data-rank-preview="A">Objectif ${fmtKg(b.goal)} kg</button>
+          ${v.kind === 'rank' && v.rank !== 'A' ? `<button type="button" class="on">Rang ${v.rank}</button>` : ''}
         </div>
       </div>
 
@@ -1084,12 +1324,30 @@ function kcalRing(eaten, target) {
       <circle cx="55" cy="55" r="${r}" class="kr-fg" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c * (1 - f)).toFixed(1)}"/>
     </svg>`;
 }
+/* Ambiance de la journée selon ce que tu as mangé :
+   low = pas assez mangé pour l'heure, ok = objectif atteint, over = dépassé, run = en cours */
+function nutriStatus(date, t, tg) {
+  const today = todayKey();
+  const h = date < today ? 24 : new Date().getHours() + new Date().getMinutes() / 60;
+  const expected = Math.max(0, Math.min(1, (h - 7) / 14)); // 7 h → 0 %, 21 h → 100 %
+  if (t.kcal > tg.kcal + 100) return { k: 'over', icon: '⚠️', title: 'LIMITE DÉPASSÉE', msg: `${fmtNum(t.kcal - tg.kcal)} kcal au-dessus de l'objectif. Le Système te pénalise : pas de quête nutrition aujourd'hui.` };
+  if (t.kcal >= tg.kcal - 300) {
+    const pOk = t.p >= tg.p * 0.8;
+    return { k: 'ok', icon: '🏆', title: pOk ? 'OBJECTIF DU JOUR ATTEINT' : 'CALORIES ATTEINTES', msg: pOk ? 'Calories et protéines dans la cible. Parfait, continue comme ça.' : `Calories bonnes, mais il manque ${fmtNum(tg.p * 0.8 - t.p)} g de protéines.` };
+  }
+  if (h >= 11 && t.kcal < tg.kcal * expected * 0.5) return { k: 'low', icon: '🥶', title: 'CARBURANT INSUFFISANT', msg: date < today ? 'Journée trop légère : le corps ne peut pas construire de muscle comme ça.' : "Tu n'as pas assez mangé pour l'heure. Mange un vrai repas, riche en protéines." };
+  return { k: 'run', icon: '⚡', title: 'JOURNÉE EN COURS', msg: `Encore ${fmtNum(tg.kcal - t.kcal)} kcal à placer intelligemment.` };
+}
+
 function renderNutritionCard(today) {
   const t = dayTotals(today), tg = nutritionTargets();
   const left = tg.kcal - t.kcal;
+  const ns = nutriStatus(today, t, tg);
   return `
-    <section class="panel">
+    <section class="panel nut nut-${ns.k}">
+      <div class="nut-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="panel-head"><div class="panel-title">Nutrition du jour</div><button class="btn small ghost" data-go="meals">Ouvrir ›</button></div>
+      <div class="nut-status"><span class="nut-ico">${ns.icon}</span><div><b>${ns.title}</b><span>${esc(ns.msg)}</span></div></div>
       <div class="nutri-top">
         <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'restantes' : 'en trop'}</span></div></div>
         <div class="nutri-macros">${macroBars(t, tg)}</div>
@@ -1106,15 +1364,18 @@ function renderMeals() {
   const t = dayTotals(day), tg = nutritionTargets();
   const left = tg.kcal - t.kcal;
   const validated = nutritionDays(today).has(day);
+  const ns = nutriStatus(day, t, tg);
   const mealPhotos = photos.filter(p => p.kind === 'meal' && p.date === day);
   return `
-    <section class="panel">
+    <section class="panel nut nut-${ns.k}">
+      <div class="nut-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="cal-head" style="margin-bottom:12px">
         <button class="icon-btn" data-meal-day="-1" aria-label="Jour précédent">‹</button>
-        <div class="center"><div class="cal-month">${day === today ? "Aujourd'hui" : esc(fmtDayLong(day))}</div>
+        <div class="center"><div class="cal-month date-glow">${day === today ? "Aujourd'hui · " + esc(fmtDayShort(day)) : esc(fmtDayLong(day))}</div>
           <div class="small muted">${validated ? '<span style="color:var(--good)">✓ Quête nutrition validée (+' + NUTRI_XP + ' XP)</span>' : day === today ? 'Quête : 3 repas, ≤ objectif, protéines ≥ 80 %' : 'Quête nutrition non validée'}</div></div>
         <button class="icon-btn" data-meal-day="1" aria-label="Jour suivant" ${day >= today ? 'disabled style="opacity:.3"' : ''}>›</button>
       </div>
+      <div class="nut-status"><span class="nut-ico">${ns.icon}</span><div><b>${ns.title}</b><span>${esc(ns.msg)}</span></div></div>
       <div class="nutri-top">
         <div class="kring-wrap">${kcalRing(t.kcal, tg.kcal)}<div class="kring-txt"><b>${fmtNum(Math.abs(left))}</b><span>${left >= 0 ? 'kcal restantes' : 'kcal en trop'}</span></div></div>
         <div class="nutri-macros">${macroBars(t, tg)}</div>
@@ -1265,17 +1526,157 @@ async function deleteFood(id) {
 }
 
 /* =========================================================
+   LE SYSTÈME JUGE : notes des quêtes, journée racontée, progression
+   ========================================================= */
+const normJ = s => ' ' + s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ') + ' ';
+const NOTE_POS = [
+  [/ sans (mon )?(tel|telephone|portable) /, 'sans téléphone', 0.12],
+  [/ (intens|a fond|max|record|pr |depasse|explos|sprint|lourd|serie|reps|km |fractionn|hiit|transpir|mort)/, 'intense', 0.15],
+  [/ (concentr|focus|productif|efficace|applique|serieux|discipline|deep work|pomodoro|zone )/, 'concentré', 0.12],
+  [/ (fini|termine|boucle|publie|poste|livre|valide|reussi|objectif atteint)/, 'objectif accompli', 0.1],
+  [/ (appris|compris|revis|lu |lecture|chapitre|cours|formation|tuto)/, 'apprentissage', 0.08],
+  [/ (nouveau|premiere fois|progres|ameliore|mieux que)/, 'progrès', 0.08],
+  [/ (viewer|abonne|vue|follow)/, 'résultats', 0.05],
+];
+const NOTE_NEG = [
+  [/ (distrait|deconcentr|telephone|portable|scroll|insta|snap|netflix|youtube)/, 'distractions', -0.15],
+  [/ (fatigu|crev|epuis|pas dormi|mal dormi|malade)/, 'fatigue', -0.08],
+  [/ (pas motive|flemme|glande|procrastin|rien fait|nul |rate |bacle|abandonn|arrete tot|ecourte|pas fini)/, "manque d'engagement", -0.2],
+  [/ (court|vite fait|leger|tranquille|pepere)/, 'séance légère', -0.08],
+];
+/* Note d'une quête → multiplicateur d'XP et de stats (0,6 à 1,5) */
+function judgeNote(text) {
+  if (!text || !text.trim()) return { mult: 1, tags: [], verdict: '' };
+  let t = normJ(text);
+  const tags = [];
+  let sum = 0;
+  for (const [re, tag, v] of NOTE_POS) if (re.test(t)) { sum += v; tags.push('+ ' + tag); t = t.replace(re, ' '); }
+  for (const [re, tag, v] of NOTE_NEG) if (re.test(t)) { sum += v; tags.push('− ' + tag); }
+  const mult = Math.round(Math.max(0.6, Math.min(1.5, 1 + sum)) * 100) / 100;
+  const verdict = tags.length ? `Qualité ×${String(mult).replace('.', ',')} · ${tags.join(', ')}` : '';
+  return { mult, tags, verdict };
+}
+
+/* Journée racontée → score de Concentration de −3 à +3 */
+const DAY_FOCUS = [
+  [/ (travail|bosse|boss|taf|boulot|chantier)/, 'travail'], [/ (revis|etudi|cours|lecture|lu |livre|appris|formation|tuto)/, 'apprentissage'],
+  [/ (montage|monte|clip|edit|miniature)/, 'montage'], [/ (live|stream)/, 'live'], [/ (code|programm|projet|ecrit|script)/, 'projet'],
+  [/ (sport|muscu|salle|course|couru|entrain|foot|boxe|natation)/, 'sport'], [/ (medit|lecture|focus|concentr|productif|pomodoro|deep work)/, 'focus'],
+];
+const DAY_DISTRACT = [
+  [/ (scroll|reseaux|insta|instagram|snap|snapchat|facebook|twitter| x )/, 'réseaux'], [/ (regarde tiktok|scroll tiktok|sur tiktok|tiktok pendant)/, 'TikTok'],
+  [/ (youtube|netflix|serie|film|anime)/, 'vidéos'], [/ (jeu|jeux|ps5|playstation|console|fortnite|fifa|valorant)/, 'jeux'],
+  [/ (glande|rien fait|procrastin|traine|perdu du temps|dormi toute|sieste)/, 'temps perdu'], [/ (distrait|deconcentr|telephone|portable)/, 'distractions'],
+];
+function hoursIn(chunk) {
+  let h = 0, found = false;
+  const re = /(\d+(?:[.,]\d+)?)\s*(h|heures?|hr)\s*(\d{1,2})?|(\d+)\s*(min|minutes?|mn)/gi;
+  let m;
+  while ((m = re.exec(chunk))) {
+    found = true;
+    if (m[1]) h += parseFloat(m[1].replace(',', '.')) + (m[3] ? +m[3] / 60 : 0);
+    else h += +m[4] / 60;
+  }
+  return found ? h : null;
+}
+function judgeDay(text) {
+  const chunks = text.split(/[\n.;!?]+|,| puis | ensuite | apres | et /i).map(c => c.trim()).filter(Boolean);
+  let focusH = 0, distH = 0;
+  const focusTags = new Set(), distTags = new Set();
+  for (const c of chunks) {
+    const t = normJ(c);
+    const h = hoursIn(c);
+    const isLive = / (live|stream)/.test(t);
+    const d = DAY_DISTRACT.filter(([re, tag]) => re.test(t) && !(isLive && tag === 'TikTok'));
+    const f = DAY_FOCUS.filter(([re]) => re.test(t));
+    if (d.length && !(/ sans /.test(t))) { distH += h != null ? h : 0.75; d.forEach(([, tag]) => distTags.add(tag)); }
+    else if (f.length) { focusH += h != null ? h : 0.75; f.forEach(([, tag]) => focusTags.add(tag)); }
+  }
+  const t = normJ(text);
+  let bonus = 0;
+  if (/ (concentr|focus|productif|efficace|discipline)/.test(t)) bonus += 0.5;
+  if (/ (distrait|procrastin|glande|rien fait|perdu du temps)/.test(t)) bonus -= 0.5;
+  const raw = (focusH - 1.3 * distH) / 1.5 + bonus;
+  const score = Math.max(-3, Math.min(3, Math.round(raw * 2) / 2));
+  const grade = score >= 2.5 ? 'S' : score >= 1.5 ? 'A' : score >= 0.5 ? 'B' : score > -0.5 ? 'C' : score > -1.5 ? 'D' : 'E';
+  const fh = Math.round(focusH * 10) / 10, dh = Math.round(distH * 10) / 10;
+  const parts = [];
+  if (focusTags.size) parts.push(`Focus ≈ ${String(fh).replace('.', ',')} h (${[...focusTags].join(', ')})`);
+  if (distTags.size) parts.push(`Distractions ≈ ${String(dh).replace('.', ',')} h (${[...distTags].join(', ')})`);
+  if (!parts.length) parts.push('Rien de mesurable : précise ce que tu as fait et combien de temps.');
+  return { score, grade, focusH: fh, distH: dh, verdict: parts.join(' · ') };
+}
+
+function openJournalSheet() {
+  const today = todayKey();
+  const prev = state.journals.find(j => j.date === today);
+  openSheet({
+    tag: '[SYSTÈME] Rapport de journée',
+    title: '🎯 Raconte ta journée',
+    body: `
+      <p class="small" style="margin-top:-6px">Écris ce que tu as fait aujourd'hui, avec les durées si possible. Le Système juge ta <b>Concentration</b> : le travail, l'apprentissage, le montage, les lives et le sport comptent pour ; les réseaux, les vidéos, les jeux et le temps perdu comptent contre.</p>
+      <textarea class="input" id="journal-text" rows="6" placeholder="Ex : 3 h de montage concentré, 2 h de live, 1 h de salle, puis 1 h 30 à scroller sur Insta…">${prev ? esc(prev.text) : ''}</textarea>
+      <button type="button" class="btn primary block" style="margin-top:12px" data-judge="1">⚖️ Faire juger ma journée</button>
+      ${prev ? `<p class="small faint">Déjà jugée aujourd'hui (${prev.score > 0 ? '+' : ''}${String(prev.score).replace('.', ',')}). Renvoyer remplace le jugement.</p>` : ''}`,
+    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+    onMount(sheet, close) {
+      sheet.addEventListener('click', e => {
+        if (!e.target.closest('[data-judge]')) return;
+        const text = $('#journal-text', sheet).value.trim();
+        if (text.length < 8) { toast('Trop court', 'Raconte un peu plus ta journée.', 'warn'); return; }
+        const before = computeStats(state.logs, today).values.concentration;
+        const j = judgeDay(text);
+        state.journals = state.journals.filter(x => x.date !== today);
+        state.journals.push({ id: uid(), date: today, text: text.slice(0, 1000), score: j.score, verdict: j.verdict });
+        save();
+        close(null);
+        render();
+        const after = computeStats(state.logs, today).values.concentration;
+        const d = after - before;
+        celebrate({
+          kind: j.score > 0 ? 'win' : j.score < 0 ? 'fail' : 'neutral',
+          title: `JOURNÉE DE RANG ${j.grade}`,
+          big: `${j.score > 0 ? '+' : ''}${String(j.score).replace('.', ',')}`,
+          sub: `Concentration ${d >= 0 ? '+' : ''}${d.toFixed(2).replace('.', ',')}`,
+          lines: [j.verdict],
+        });
+      });
+    },
+  });
+}
+
+/* Progression globale : stats + corps + nutrition, sur toute l'année */
+const PROG_GRADES = [['S', 80], ['A', 62], ['B', 45], ['C', 30], ['D', 15], ['E', 0]];
+function progressionInfo(today, st) {
+  st = st || computeStats(state.logs, today);
+  const gains = STAT_KEYS.map(k => st.values[k] - st.base[k]);
+  const statGain = gains.reduce((a, b) => a + b, 0) / gains.length;
+  const bp = bodyProgress().progress;
+  const nd = nutritionDays(today);
+  let ok = 0, n = 0;
+  for (let i = 1; i <= 30; i++) { const d = addDays(today, -i); if (d < st.start) break; n++; if (nd.has(d)) ok++; }
+  const nutri = n ? ok / n : 0;
+  const parts = { stats: Math.min(1, Math.max(0, statGain) / 30), corps: bp, nutrition: nutri };
+  const score = 100 * (0.4 * parts.stats + 0.35 * parts.corps + 0.25 * parts.nutrition);
+  const grade = PROG_GRADES.find(([, min]) => score >= min)[0];
+  const next = PROG_GRADES.slice().reverse().find(([, min]) => min > score);
+  const day = daysBetween(st.start, today);
+  return { score, grade, next, parts, statGain, day };
+}
+
+/* =========================================================
    Onglet 2 : Aujourd'hui
    ========================================================= */
 function entryHtml(l, withDelete = true) {
   const meta = [l.minutes ? fmtMinutes(l.minutes) : 'Fait ✓', l.stats.map(k => statByKey[k].name).join(' · ')].filter(Boolean).join(' — ');
   return `
-    <div class="entry">
+    <div class="entry ${l.id === ui.lastLogId ? 'fresh' : ''} ${l.quality > 1.05 ? 'q-up' : l.quality < 0.95 ? 'q-down' : ''}">
       <div class="entry-emoji">${esc(l.icon)}</div>
       <div class="entry-body">
         <div class="entry-title">${esc(l.name)}</div>
         <div class="entry-meta">${esc(meta)}</div>
         ${l.note ? `<div class="entry-note">“${esc(l.note)}”</div>` : ''}
+        ${l.verdict ? `<div class="entry-verdict">⚖️ ${esc(l.verdict)}</div>` : ''}
       </div>
       <div class="entry-xp">+${l.xp} XP</div>
       ${withDelete ? `<button class="icon-btn danger" data-del-log="${esc(l.id)}" aria-label="Supprimer">✕</button>` : ''}
@@ -1288,7 +1689,7 @@ function renderToday() {
   const xpDay = logs.reduce((s, l) => s + l.xp, 0);
 
   const grid = state.activities.map(a => `
-    <button class="activity-btn" data-log-activity="${esc(a.id)}">
+    <button class="activity-btn" data-log-activity="${esc(a.id)}"><span class="ab-shine" aria-hidden="true"></span>
       <span class="activity-emoji">${esc(a.icon)}</span>
       <span>
         <span class="activity-name">${esc(a.name)}</span><br>
@@ -1300,7 +1701,7 @@ function renderToday() {
     <section class="panel">
       <div class="day-summary">
         <div>
-          <div class="panel-title">${esc(fmtDayLong(today))}</div>
+          <div class="date-glow big">${esc(fmtDayLong(today))}</div>
           <div class="small muted" style="margin-top:4px">${logs.length} quête${logs.length > 1 ? 's' : ''} accomplie${logs.length > 1 ? 's' : ''}</div>
         </div>
         <div class="day-xp">+${fmtNum(xpDay)} XP</div>
@@ -1332,8 +1733,8 @@ function openLogSheet(activity) {
       <button type="button" class="on" data-day="today">Aujourd'hui</button>
       <button type="button" data-day="yesterday">Hier</button>
     </div>
-    <label class="field"><span>Petite note (facultatif)</span>
-      <input class="input" id="log-note" maxlength="280" placeholder="Ex : 5 km, chapitre 3, 120 viewers…" autocomplete="off">
+    <label class="field"><span>Note : le Système la lit et juge la qualité de ta séance</span>
+      <input class="input" id="log-note" maxlength="280" placeholder="Ex : séance intense, record au développé couché" autocomplete="off">
     </label>
     <div class="field"><span>Durée — touche pour valider</span></div>
     <div class="dur-grid">
@@ -1397,6 +1798,11 @@ function addLog(activity, minutes, note, date) {
     difficulty: activity.difficulty,
     xp: entryXp(minutes, activity.difficulty),
   };
+  const j = judgeNote(note);
+  log.quality = j.mult;
+  log.verdict = j.verdict;
+  log.xp = Math.max(1, Math.round(log.xp * j.mult));
+  ui.lastLogId = log.id;
   state.logs.push(log);
   save();
   const after = levelInfo(totalXp());
@@ -1407,11 +1813,21 @@ function addLog(activity, minutes, note, date) {
     .map(g => `${statByKey[g.k].name} +${g.d.toFixed(2).replace('.', ',')}`);
 
   render();
-  toast('Quête accomplie', `+${log.xp} XP${gains.length ? ' · ' + gains.join(' · ') : ''}`);
-  if (after.level > before.level) {
-    const rb = rankFor(before.level), ra = rankFor(after.level);
-    setTimeout(() => showLevelUp(after.level, ra.letter !== rb.letter ? ra : null), 500);
-  }
+  celebrate({
+    kind: j.mult < 0.95 ? 'fail' : 'win',
+    title: j.mult < 0.95 ? 'QUÊTE VALIDÉE… DE JUSTESSE' : j.mult > 1.05 ? 'QUÊTE ACCOMPLIE · EXCELLENT' : 'QUÊTE ACCOMPLIE',
+    icon: log.icon,
+    big: `+${log.xp} XP`,
+    count: log.xp,
+    sub: `${log.name}${log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
+    chips: gains,
+    lines: j.verdict ? ['Jugement du Système : ' + j.verdict] : [],
+  }).then(() => {
+    if (after.level > before.level) {
+      const rb = rankFor(before.level), ra = rankFor(after.level);
+      showLevelUp(after.level, ra.letter !== rb.letter ? ra : null);
+    }
+  });
 }
 
 function showLevelUp(level, newRank) {
@@ -1442,6 +1858,87 @@ async function deleteLog(id) {
 /* =========================================================
    Onglet 3 : Historique
    ========================================================= */
+/* ---------- Bilan du mois ---------- */
+function monthReport(ym, today) {
+  const st = computeStats(state.logs, today);
+  const first = ym + '-01';
+  const [y, m] = ym.split('-').map(Number);
+  const lastDay = dateKey(new Date(y, m, 0));
+  const end = lastDay < today ? lastDay : today;
+  const logs = state.logs.filter(l => l.date >= first && l.date <= end);
+  const nd = [...nutritionDays(today)].filter(d => d >= first && d <= end);
+  const xp = logs.reduce((s, l) => s + l.xp, 0) + nd.length * NUTRI_XP;
+  const byAct = new Map();
+  for (const l of logs) {
+    const k = l.activityId || l.name;
+    const o = byAct.get(k) || { name: l.name, icon: l.icon, min: 0, n: 0 };
+    o.min += l.minutes || 30; o.n++;
+    byAct.set(k, o);
+  }
+  const acts = [...byAct.values()].sort((a, b) => b.min - a.min);
+  const prevEnd = addDays(first, -1);
+  const v0 = st.history.get(prevEnd) || st.base, v1 = st.history.get(end) || st.values;
+  const statDiff = STAT_KEYS.map(k => ({ k, d: v1[k] - v0[k] }));
+  const powerDiff = powerOf(v1) - powerOf(v0);
+  const wIn = state.weights.filter(w => w.date >= first && w.date <= end);
+  const wBefore = [...state.weights].reverse().find(w => w.date < first);
+  const w0 = wBefore ? wBefore.kg : (wIn[0] ? wIn[0].kg : null);
+  const w1 = wIn.length ? wIn[wIn.length - 1].kg : w0;
+  const jr = state.journals.filter(j => j.date >= first && j.date <= end);
+  const jAvg = jr.length ? jr.reduce((s, j) => s + j.score, 0) / jr.length : null;
+  const progressed = powerDiff > 0.2 || (w0 != null && w1 != null && w1 < w0 - 0.2);
+  return { ym, end, done: lastDay < today, xp, days: new Set(logs.map(l => l.date)).size, acts, statDiff, powerDiff, w0, w1, nd: nd.length, jAvg, progressed, empty: !logs.length && !wIn.length && !nd.length };
+}
+function renderMonthReport(ym, today) {
+  const r = monthReport(ym, today);
+  const [y, m] = ym.split('-').map(Number);
+  if (r.empty) return `<section class="panel"><div class="panel-head"><div class="panel-title">Bilan de ${MONTHS[m - 1]}</div></div><div class="empty">Aucune donnée ce mois-ci.</div></section>`;
+  const maxMin = Math.max(1, ...r.acts.map(a => a.min));
+  return `
+    <section class="panel report ${r.progressed ? 'rep-up' : 'rep-down'}">
+      <div class="panel-head"><div class="panel-title">Bilan de ${MONTHS[m - 1]} ${y}${r.done ? '' : ' (en cours)'}</div></div>
+      <div class="rep-verdict">${r.progressed ? '▲ TU AS PROGRESSÉ' : '▼ PAS DE PROGRESSION'}</div>
+      <div class="kpis" style="margin:12px 0">
+        <div class="kpi"><b>${fmtNum(r.xp)}</b><span>XP gagnés</span></div>
+        <div class="kpi"><b>${r.days}</b><span>jours actifs</span></div>
+        <div class="kpi"><b>${r.nd}</b><span>jours nutrition ✓</span></div>
+      </div>
+      <div class="field"><span>Temps passé</span>
+        ${r.acts.length ? r.acts.map(a => `
+          <div class="rep-act"><span>${esc(a.icon)} ${esc(a.name)}</span><b>${fmtMinutes(a.min)}</b></div>
+          <div class="bar thin"><span style="width:${(a.min / maxMin) * 100}%"></span></div>`).join('') : '<div class="small muted">Aucune quête.</div>'}
+      </div>
+      <div class="field" style="margin-bottom:0"><span>Évolution du mois</span>
+        <div class="rep-grid">
+          ${r.statDiff.map(x => `<div><span>${statByKey[x.k].icon} ${statByKey[x.k].name}</span><b class="${x.d > 0.05 ? 'trend-up' : x.d < -0.05 ? 'trend-down' : ''}">${x.d >= 0 ? '+' : ''}${fmtStat(x.d)}</b></div>`).join('')}
+          ${r.w0 != null ? `<div><span>⚖️ Poids</span><b class="${r.w1 < r.w0 ? 'trend-up' : r.w1 > r.w0 ? 'trend-down' : ''}">${fmtKg(r.w0)} → ${fmtKg(r.w1)} kg</b></div>` : ''}
+          ${r.jAvg != null ? `<div><span>🎯 Journées jugées</span><b>${r.jAvg >= 0 ? '+' : ''}${r.jAvg.toFixed(1).replace('.', ',')} en moyenne</b></div>` : ''}
+        </div>
+      </div>
+    </section>`;
+}
+
+/* À l'ouverture d'un nouveau mois : le bilan du mois précédent s'affiche une fois */
+function maybeShowMonthReport() {
+  const today = todayKey();
+  const d = parseKey(today);
+  const prev = dateKey(new Date(d.getFullYear(), d.getMonth() - 1, 1)).slice(0, 7);
+  if (state.seenReports.includes(prev)) return;
+  const r = monthReport(prev, today);
+  if (r.empty) return;
+  state.seenReports.push(prev);
+  save();
+  const [, m] = prev.split('-').map(Number);
+  celebrate({
+    kind: r.progressed ? 'win' : 'fail',
+    title: `BILAN DE ${MONTHS[m - 1].toUpperCase()}`,
+    big: `${fmtNum(r.xp)} XP`,
+    sub: r.progressed ? 'Tu as progressé ce mois-ci.' : "Pas de progression ce mois-ci. Le Système attend mieux.",
+    chips: r.acts.slice(0, 4).map(a => `${a.name} ${fmtMinutes(a.min)}`),
+    lines: [r.w0 != null ? `Poids : ${fmtKg(r.w0)} → ${fmtKg(r.w1)} kg` : '', `${r.days} jours actifs · ${r.nd} jours de nutrition validés`].filter(Boolean),
+  });
+}
+
 function renderHistory() {
   const today = todayKey();
   if (!ui.calMonth) ui.calMonth = today.slice(0, 7);
@@ -1497,11 +1994,13 @@ function renderHistory() {
 
     <section class="panel">
       <div class="panel-head">
-        <div class="panel-title">${esc(fmtDayLong(sel))}</div>
+        <div class="date-glow">${esc(fmtDayLong(sel))}</div>
         <div class="entry-xp">${fmtNum(selXp)} XP</div>
       </div>
       ${selLogs.length ? selLogs.map(l => entryHtml(l)).join('') : `<div class="empty">Aucune quête ce jour-là.</div>`}
     </section>
+
+    ${renderMonthReport(ui.calMonth, today)}
 
     <section class="panel">
       <div class="panel-head"><div class="panel-title">XP par semaine</div></div>
@@ -1540,6 +2039,15 @@ function renderSettings() {
           <input class="input" id="goal-weight" inputmode="decimal" value="${fmtKg(state.body.goalWeight)}" autocomplete="off">
         </label>
       </div>
+      <div class="btn-row" style="margin-top:14px">
+        <label class="field"><span>Graisse visée (%)</span><input class="input" data-body="goalFat" data-min="5" data-max="40" inputmode="decimal" value="${fmtG(state.body.goalFat)}"></label>
+        <label class="field"><span>Muscles visés (%)</span><input class="input" data-body="goalMuscle" data-min="20" data-max="60" inputmode="decimal" value="${fmtG(state.body.goalMuscle)}"></label>
+      </div>
+      <div class="btn-row">
+        <label class="field" style="margin-bottom:0"><span>Jour 0 (départ)</span><input class="input" type="date" data-date="startDate" value="${state.startDate}"></label>
+        <label class="field" style="margin-bottom:0"><span>Date objectif</span><input class="input" type="date" data-date="goalDate" value="${state.body.goalDate}"></label>
+      </div>
+      ${goalPaceHtml()}
     </section>
 
     <section class="panel">
@@ -1593,6 +2101,10 @@ function renderSettings() {
           <li><b>Rang</b> : E (niv. 1) → D (10) → C (20) → B (35) → A (50) → S (70).</li>
           <li><b>Nutrition</b> : une journée terminée avec 3 repas notés, calories entre objectif −400 et objectif +100, et protéines ≥ 80 % = +${NUTRI_XP} XP et +1 point de Discipline.</li>
           <li><b>Corps</b> : l'hologramme ne s'affine qu'avec ton vrai poids. Perte réaliste : 0,5 à 1 kg par semaine.</li>
+          <li><b>Notes de quêtes</b> : le Système les lit. « Intense, record, concentré » = jusqu'à ×1,5 d'XP ; « distrait, fatigué, pas motivé » = jusqu'à ×0,6.</li>
+          <li><b>Concentration</b> : touche ＋ pour raconter ta journée. Travail, apprentissage, montage, live et sport comptent pour ; réseaux, vidéos, jeux et temps perdu comptent contre (de −3 à +3).</li>
+          <li><b>Progression</b> : calculée sur toute l'année depuis le jour 0 : 40 % stats, 35 % corps (poids), 25 % nutrition (30 derniers jours).</li>
+          <li><b>Rangs du corps</b> : E = départ, D/C/B = étapes, A = ton objectif (${fmtKg(state.body.goalWeight)} kg, < ${state.body.goalFat + 1} % de graisse), S = au-delà.</li>
           <li><b>Stats</b> (sur 100, départ à 10) : elles montent un peu chaque jour où tu travailles le domaine. Plus une stat est haute, plus elle monte lentement. En faire 6 h d'un coup n'apporte presque pas plus que 2 h : la régularité paie.</li>
           <li><b>Discipline</b> : gagne aussi un petit bonus chaque jour où tu fais au moins une activité.</li>
           <li><b>Baisse</b> : après ${RULES.decayGraceDays} jours sans rien dans un domaine, la stat baisse légèrement chaque jour.</li>
@@ -1606,6 +2118,21 @@ function renderSettings() {
       <button class="btn danger block" data-action="reset">Remettre à zéro</button>
     </section>
   `;
+}
+
+/* Rythme nécessaire pour atteindre l'objectif à la date voulue */
+function goalPaceHtml() {
+  const b = state.body, cur = currentWeight();
+  const today = todayKey();
+  const from = today > state.startDate ? today : state.startDate;
+  const weeks = daysBetween(from, b.goalDate) / 7;
+  if (weeks <= 0) return '<p class="small faint">La date objectif est passée.</p>';
+  const toLose = cur - b.goalWeight;
+  const fatNow = composition(null).fat;
+  const fatToLose = (cur * fatNow) / 100 - (b.goalWeight * b.goalFat) / 100;
+  const pace = toLose / weeks;
+  const ok = pace <= 0.75;
+  return `<p class="small ${ok ? 'muted' : 'decay-warn'}" style="margin-bottom:0">Objectif ${fmtKg(b.goalWeight)} kg à moins de ${fmtG(b.goalFat + 1)} % de graisse pour le ${esc(fmtDayLong(b.goalDate))} : ≈ ${fmtG(Math.round(weeks))} semaines, ${fmtKg(Math.max(0, toLose))} kg à perdre (≈ ${fmtKg(Math.max(0, fatToLose))} kg de graisse) → <b>${pace > 0 ? fmtG(Math.round(pace * 100) / 100) : '0'} kg/semaine</b>. ${ok ? 'Rythme réaliste ✓' : 'Rythme trop rapide : recule la date ou accepte un rythme plus lent.'}</p>`;
 }
 
 function openActivityEditor(activity) {
@@ -1778,6 +2305,14 @@ document.addEventListener('click', e => {
   const t = e.target;
   const tab = t.closest('.tab');
   if (tab) return go(tab.dataset.tab);
+  if (t.closest('#day0-btn')) {
+    ui.day0 = !ui.day0;
+    ui.holoRank = null;
+    if (currentTab !== 'home') go('home'); else { render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    $('#day0-btn').classList.toggle('on', ui.day0);
+    if (ui.day0) toast('Archive du jour 0', fmtDayLong(state.startDate));
+    return;
+  }
 
   const goBtn = t.closest('[data-go]');
   if (goBtn) return go(goBtn.dataset.go);
@@ -1818,12 +2353,29 @@ document.addEventListener('click', e => {
   if (vph) return openPhotoViewer(vph.dataset.photo);
 
   const hm = t.closest('#view [data-holo-mode]');
-  if (hm) { ui.holoMode = hm.dataset.holoMode; return render(); }
+  if (hm) { ui.holoMode = 'now'; ui.holoRank = null; ui.day0 = false; return render(); }
+  const rp = t.closest('#view [data-rank-preview]');
+  if (rp) {
+    ui.holoRank = ui.holoRank === rp.dataset.rankPreview && !rp.closest('.holo-mode') ? null : rp.dataset.rankPreview;
+    ui.day0 = false;
+    render();
+    const lab = $('#view .lab');
+    if (lab && !rp.closest('.holo-mode')) lab.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  const stt = t.closest('#view [data-stats-tab]');
+  if (stt) { ui.statsTab = stt.dataset.statsTab; return render(); }
+  const ck = t.closest('#view [data-chart-key]');
+  if (ck) { ui.chartKey = ck.dataset.chartKey; return render(); }
+  const ctf = t.closest('#view [data-chart-tf]');
+  if (ctf) { ui.chartTf = ctf.dataset.chartTf; return render(); }
 
   const action = t.closest('#view [data-action]');
   if (action) {
     const a = action.dataset.action;
     if (a === 'weigh') return openWeighSheet();
+    if (a === 'journal') return openJournalSheet();
+    if (a === 'day0') { ui.day0 = false; return render(); }
     if (a === 'photos') return openPhotosSheet();
     if (a === 'export') return exportSave();
     if (a === 'import') return $('#import-file').click();
@@ -1833,7 +2385,7 @@ document.addEventListener('click', e => {
 
 document.addEventListener('change', e => {
   if (e.target.id === 'player-name') {
-    state.playerName = e.target.value.trim().slice(0, 40) || 'Chasseur';
+    state.playerName = e.target.value.trim().slice(0, 40) || 'Charisme';
     save();
     toast('Profil mis à jour', state.playerName);
   }
@@ -1849,6 +2401,15 @@ document.addEventListener('change', e => {
     save();
     e.target.value = fmtKg(kg);
     toast('Objectif mis à jour', `${fmtKg(state.body.startWeight)} kg → ${fmtKg(state.body.goalWeight)} kg`);
+  }
+  if (e.target.dataset && e.target.dataset.date) {
+    const v = e.target.value;
+    if (!isValidKey(v)) { toast('Date invalide'); return; }
+    if (e.target.dataset.date === 'startDate') state.startDate = v; else state.body.goalDate = v;
+    save();
+    toast('Date enregistrée', fmtDayLong(v));
+    render();
+    return;
   }
   if (e.target.dataset && e.target.dataset.body) {
     const key = e.target.dataset.body, raw = e.target.value.trim();
@@ -1914,6 +2475,7 @@ async function start() {
   render();
   await loadPhotos();
   if (photos.length) render();
+  setTimeout(maybeShowMonthReport, 900);
   try {
     if (sessionStorage.getItem('monSysteme.updated')) {
       sessionStorage.removeItem('monSysteme.updated');
