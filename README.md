@@ -1,8 +1,10 @@
 # Mon Système
 
 Application personnelle style "Système" (Solo Leveling) : niveau, rang E→S, 5 stats
-réalistes, série de jours actifs, quêtes du jour, scan corporel 3D (poids, graisse,
-muscles), repas et nutrition (Ciqual + Open Food Facts), historique, sauvegarde JSON.
+4 stats réalistes + Progression globale, jour 0 (1er décembre), notes et journées jugées,
+scan corporel 3D sculpté (actuel → objectif, aperçu par rang E→S), repas et nutrition
+(Ciqual + Open Food Facts) avec ambiances, graphique façon trading (jour/mois/année),
+bilan mensuel, historique, sauvegarde JSON.
 
 PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 (Safari → Partager → « Sur l'écran d'accueil ») et utilisable hors connexion.

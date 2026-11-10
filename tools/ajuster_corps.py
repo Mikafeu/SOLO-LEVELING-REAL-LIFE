@@ -16,8 +16,8 @@ import numpy as np
 PROFIL = {
     # hauteur (m) : (largeur torse, profondeur avant, profondeur arrière)
     1.42: (1.00, 1.00, 1.00),
-    1.32: (1.02, 1.12, 1.02),   # poitrine plus projetée
-    1.22: (1.05, 1.10, 1.00),
+    1.32: (1.06, 1.12, 1.04),   # poitrine plus projetée, dos plus large
+    1.22: (1.07, 1.10, 1.02),
     1.12: (1.10, 1.16, 1.00),   # ventre
     1.04: (1.08, 1.16, 0.96),
     0.96: (0.95, 1.04, 0.85),   # hanches / fessiers plus fins
