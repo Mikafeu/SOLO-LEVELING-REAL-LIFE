@@ -1,6 +1,9 @@
 # Mon Système
 
 Application personnelle style "Système" (Solo Leveling) : niveau, rang E→S, 5 stats
+v2.0 : interface « Système » (particules, verre dépoli, néon, entrées hologramme, sons et
+vibrations), niveau lié au poids, quête quotidienne avec pénalité, bilan du jour qui fait
+monter OU baisser les stats, stats en anneaux, LEVEL UP plein écran.
 4 stats réalistes + Progression globale, jour 0 (1er décembre), notes et journées jugées,
 scan corporel 3D sculpté (actuel → objectif, aperçu par rang E→S), repas et nutrition
 (Ciqual + Open Food Facts) avec ambiances, graphique façon trading (jour/mois/année),

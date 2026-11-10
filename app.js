@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '2.0.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -293,7 +293,7 @@ function gradeFor(v) {
 /* Le corps compte aussi : chaque kg perdu vers l'objectif rapporte de l'XP, chaque kg repris en retire. */
 const BODY_XP_PER_KG = 300;
 const bodyXp = () => Math.round((state.body.startWeight - currentWeight()) * BODY_XP_PER_KG * (state.body.goalWeight <= state.body.startWeight ? 1 : -1));
-const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp());
+const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp() + questXp());
 
 /* Recalcule les stats en "rejouant" chaque jour depuis la 1re donnée.
    Ainsi, supprimer une entrée corrige tout automatiquement.
@@ -301,7 +301,7 @@ const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nut
 let _seriesCache = { key: '', out: null };
 function computeStats(logs, today) {
   const nd = nutritionDays(today);
-  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',') + '|' + state.bilans.map(b => b.date + b.ts).join(',');
+  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',') + '|' + state.bilans.map(b => b.date + b.ts).join(',') + '|' + questHistory(today).failed.size + '|' + state.startDate;
   if (logs === state.logs && _seriesCache.key === key) return _seriesCache.out;
   const values = {}, last = {};
   STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; });
@@ -348,6 +348,13 @@ function computeStats(logs, today) {
     for (const k of STAT_KEYS) if (a.pts[k]) o[k] = (o[k] || 0) + a.pts[k];
     if (a.net < 0) { negDays.add(b.date); o.discipline = (o.discipline || 0) - RULES.regularityBonus; }
     byDay.set(b.date, o);
+  }
+  // quête quotidienne ratée = pénalité de Discipline
+  for (const d of questHistory(today).failed) {
+    const o = byDay.get(d) || {};
+    o.discipline = (o.discipline || 0) - 2;
+    byDay.set(d, o);
+    if (d < first) first = d;
   }
   const start = state.startDate || first;
   if (start < first) first = start;
@@ -603,7 +610,7 @@ function render() {
   view.innerHTML = fn();
   // entrée "hologramme" : les blocs apparaissent en cascade
   [...view.children].forEach((el, i) => { el.style.setProperty('--i', Math.min(i, 10)); el.classList.add('enter'); });
-  if (currentTab === 'home') mountHolo();
+  if (currentTab === 'home') { mountHolo(); checkProgTier(progressionInfo(todayKey())); }
   runCountUps(view);
   anim.prev = null;
   scanSweep();
@@ -666,7 +673,7 @@ function renderHome() {
       </div>
       <div class="bar xp energy"><i class="xp-flow" aria-hidden="true"></i><span style="width:${pct}%" ${anim.prev ? `data-w-from="${anim.prev.level < lv.level ? 0 : anim.prev.level > lv.level ? 100 : anim.prev.pct}"` : ''}></span></div>
       <div class="bar-caption"><span>XP <b data-count-to="${lv.into}" data-count-from="${anim.prev && anim.prev.level === lv.level ? anim.prev.into : lv.into}">${fmtNum(lv.into)}</b> / ${fmtNum(lv.need)}</span><span>Total <b data-count-to="${xp}" data-count-from="${cf('total', xp)}">${fmtNum(xp)}</b></span></div>
-      <div class="xp-split">Quêtes ${fmtNum(state.logs.reduce((t, l) => t + l.xp, 0))} · Nutrition ${fmtNum(nutritionDays(today).size * NUTRI_XP)} · Corps ${bodyXp() >= 0 ? '+' : ''}${fmtNum(bodyXp())} XP</div>
+      <div class="xp-split">Quêtes ${fmtNum(state.logs.reduce((t, l) => t + l.xp, 0))} · Nutrition ${fmtNum(nutritionDays(today).size * NUTRI_XP)} · Corps ${bodyXp() >= 0 ? '+' : ''}${fmtNum(bodyXp())} · Quête quotidienne ${questXp() >= 0 ? '+' : ''}${fmtNum(questXp())} XP</div>
     </section>
 
     ${renderNutritionCard(today)}
@@ -711,23 +718,61 @@ function renderHome() {
   `;
 }
 
+const PROG_TF = [['J', 'Jour', 1], ['S', 'Semaine', 7], ['M', 'Mois', 30]];
+const GRADE_ORDER = ['E', 'D', 'C', 'B', 'A', 'S'];
 function renderProgression(prog, started, st) {
+  const today = todayKey();
   const pc = v => Math.round(v * 100);
+  const tf = PROG_TF.find(x => x[0] === (ui.progTf || 'S')) || PROG_TF[1];
+  const from = addDays(today, -tf[2]);
+  const old = from >= st.first ? progressionInfo(today, st, from) : null;
+  const d = old ? prog.score - old.score : null;
+  // mini courbe de la progression sur la période (et un peu avant)
+  const nPts = Math.min(30, Math.max(2, tf[2] + 1));
+  const stepDays = Math.max(1, Math.round(tf[2] / (nPts - 1)));
+  const pts = [];
+  for (let i = nPts - 1; i >= 0; i--) { const dd = addDays(today, -i * stepDays); if (dd >= st.first) pts.push(progressionInfo(today, st, dd).score); }
+  let spark = '';
+  if (pts.length >= 2) {
+    const lo = Math.min(...pts) - 0.5, hi = Math.max(...pts) + 0.5, W = 300, H = 46;
+    const path = pts.map((v, i) => `${i ? 'L' : 'M'}${((i / (pts.length - 1)) * W).toFixed(1)},${(H - ((v - lo) / (hi - lo)) * H).toFixed(1)}`).join(' ');
+    spark = `<svg class="prog-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${path}" pathLength="1"/></svg>`;
+  }
   return `
-    <section class="panel prog prog-${prog.grade}">
+    <section class="panel prog prog-${prog.grade}" id="prog">
       <div class="prog-head">
         <div><div class="panel-title">Progression</div>
-        <div class="small muted" style="margin-top:4px">${started ? `Jour ${prog.day + 1} · sur toute l'année depuis le jour 0` : `L'aventure commence le ${esc(fmtDayLong(st.start))}`}</div></div>
-        <div class="prog-grade">${prog.grade}</div>
+        <div class="small muted" style="margin-top:4px">${started ? `Jour ${prog.day + 1} · calculée sur toute l'année depuis le jour 0` : `L'aventure commence le ${esc(fmtDayLong(st.start))}`}</div></div>
+        <div class="prog-grade" data-grade="${prog.grade}">${prog.grade}</div>
       </div>
-      <div class="prog-bar"><span style="width:${Math.max(2, prog.score)}%"></span><i></i></div>
-      <div class="prog-cap"><span><b>${prog.score.toFixed(1).replace('.', ',')}</b> / 100</span><span>${prog.next ? `Rang ${prog.next[0]} à ${prog.next[1]}` : 'Rang maximal'}</span></div>
+      <div class="prog-bar"><span style="width:${Math.max(2, prog.score)}%" data-w-from="${old ? Math.max(2, old.score) : 0}"></span><i></i>
+        ${PROG_GRADES.slice(0, -1).map(([g, min]) => `<em class="tick ${prog.score >= min ? 'on' : ''}" style="left:${min}%"></em>`).join('')}</div>
+      <div class="prog-ticks">${PROG_GRADES.slice(0, -1).map(([g, min]) => `<b class="${prog.score >= min ? 'on' : ''}" style="left:${min}%">${g}</b>`).join('')}</div>
+      <div class="prog-cap"><span><b data-count-to="${prog.score}" data-count-from="${old ? old.score : 0}" data-fmt="stat" data-dur="1300">${fmtStat(prog.score)}</b> / 100</span><span>${prog.next ? `Rang ${prog.next[0]} à ${prog.next[1]}` : 'Rang maximal'}</span></div>
+      <div class="seg prog-tf">${PROG_TF.map(([k, l]) => `<button type="button" class="${k === tf[0] ? 'on' : ''}" data-prog-tf="${k}">${l}</button>`).join('')}</div>
+      <div class="prog-delta ${d == null ? '' : d > 0.05 ? 'up' : d < -0.05 ? 'down' : ''}">
+        ${d == null ? `<span>Pas encore assez d'historique pour cette période.</span>` : `<b>${d >= 0 ? '▲ +' : '▼ '}<span data-count-to="${Math.abs(d)}" data-count-from="0" data-fmt="stat">${fmtStat(Math.abs(d))}</span></b><span>${tf[0] === 'J' ? "depuis hier" : tf[0] === 'S' ? 'en 7 jours' : 'en 30 jours'}${old && old.grade !== prog.grade ? ` · rang ${old.grade} → ${prog.grade}` : ''}</span>`}
+      </div>
+      ${spark}
       <div class="prog-parts">
         <span>📊 Stats ${prog.statGain >= 0 ? '+' : ''}${fmtStat(prog.statGain)} pts</span>
         <span>🧬 Corps ${pc(prog.parts.corps)} %</span>
         <span>🍽️ Nutrition ${pc(prog.parts.nutrition)} %</span>
       </div>
     </section>`;
+}
+/* Palier franchi (ou perdu) depuis la dernière visite : effet lumineux */
+function checkProgTier(prog) {
+  let lastG = null;
+  try { lastG = localStorage.getItem('monSysteme.lastGrade'); } catch (_) {}
+  try { localStorage.setItem('monSysteme.lastGrade', prog.grade); } catch (_) {}
+  if (!lastG || lastG === prog.grade) return;
+  const up = GRADE_ORDER.indexOf(prog.grade) > GRADE_ORDER.indexOf(lastG);
+  const el = $('#prog');
+  if (el) el.classList.add(up ? 'tier-up' : 'tier-down');
+  setTimeout(() => celebrate({ kind: up ? 'win' : 'fail', title: up ? 'PALIER DE PROGRESSION FRANCHI' : 'PALIER DE PROGRESSION PERDU', big: `${lastG} → ${prog.grade}`,
+    sub: up ? 'Ta progression globale monte en grade.' : 'Ta progression globale a reculé.' }), 900);
+  if (up) { sfx('levelup'); haptic(2); } else { sfx('penalty'); haptic(2); }
 }
 
 /* =========================================================
@@ -1777,6 +1822,7 @@ function openFoodSheet(meal) {
           const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
           if (!ok.length) { toast('Rien à ajouter', 'Indique au moins un aliment avec ses grammes.', 'warn'); return; }
           const now = Date.now();
+          const qWas = dailyQuest(todayKey()).done;
           ok.forEach((it, k) => {
             const f = it.cands[it.sel];
             state.meals.push({ id: uid(), date: day, meal, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
@@ -1787,6 +1833,8 @@ function openFoodSheet(meal) {
           const kc = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
           const t = dayTotals(day), tg = nutritionTargets();
           toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - t.kcal)} kcal aujourd'hui`);
+          sfx('success'); haptic();
+          if (day === todayKey()) setTimeout(() => questCompletedCheck(qWas), 600);
         }
       });
       sheet.addEventListener('change', e => {
@@ -1932,20 +1980,29 @@ function openJournalSheet() {
 
 /* Progression globale : stats + corps + nutrition, sur toute l'année */
 const PROG_GRADES = [['S', 80], ['A', 62], ['B', 45], ['C', 30], ['D', 15], ['E', 0]];
-function progressionInfo(today, st) {
+function weightAt(date) {
+  let w = state.body.startWeight;
+  for (const x of state.weights) { if (x.date <= date) w = x.kg; else break; }
+  return w;
+}
+/* Progression à une date donnée (pour comparer jour / semaine / mois) */
+function progressionInfo(today, st, at) {
   st = st || computeStats(state.logs, today);
-  const gains = STAT_KEYS.map(k => st.values[k] - st.base[k]);
+  at = at || today;
+  const vals = at === today ? st.values : (st.history.get(at) || st.base);
+  const gains = STAT_KEYS.map(k => vals[k] - st.base[k]);
   const statGain = gains.reduce((a, b) => a + b, 0) / gains.length;
-  const bp = bodyProgress().progress;
+  const b = state.body, span = b.goalWeight - b.startWeight;
+  const bp = at === today ? bodyProgress().progress : (span === 0 ? 1 : Math.max(0, Math.min(1, (weightAt(at) - b.startWeight) / span)));
   const nd = nutritionDays(today);
   let ok = 0, n = 0;
-  for (let i = 1; i <= 30; i++) { const d = addDays(today, -i); if (d < st.start) break; n++; if (nd.has(d)) ok++; }
+  for (let i = 1; i <= 30; i++) { const d = addDays(at, -i); if (d < st.start) break; n++; if (nd.has(d)) ok++; }
   const nutri = n ? ok / n : 0;
   const parts = { stats: Math.min(1, Math.max(0, statGain) / 30), corps: bp, nutrition: nutri };
   const score = 100 * (0.4 * parts.stats + 0.35 * parts.corps + 0.25 * parts.nutrition);
   const grade = PROG_GRADES.find(([, min]) => score >= min)[0];
   const next = PROG_GRADES.slice().reverse().find(([, min]) => min > score);
-  const day = daysBetween(st.start, today);
+  const day = daysBetween(st.start, at);
   return { score, grade, next, parts, statGain, day };
 }
 
@@ -2082,6 +2139,7 @@ function saveBilan() {
   if (!good.trim() && !bad.trim()) { toast('Rien à calculer', 'Écris au moins une ligne.', 'warn'); return; }
   const st0 = computeStats(state.logs, today);
   const p0 = powerOf(st0.values);
+  const qWas = dailyQuest(today).done;
   state.bilans.filter(x => x.date === today).forEach(x => tomb(x.id));
   state.bilans = state.bilans.filter(x => x.date !== today);
   state.bilans.push({ id: uid(), date: today, ts: Date.now(), good: good.slice(0, 1500), bad: bad.slice(0, 1500) });
@@ -2095,9 +2153,120 @@ function saveBilan() {
   const chips = STAT_KEYS.map(k => ({ k, d: st1.values[k] - y[k] })).filter(x => Math.abs(x.d) > 0.005).map(x => `${statByKey[x.k].name} ${x.d > 0 ? '+' : ''}${x.d.toFixed(2).replace('.', ',')}`);
   const up = a.net >= 0;
   if (up) { sfx('success'); haptic(); } else { sfx('fail'); haptic(2); }
-  celebrate({ kind: up ? 'win' : 'fail', title: up ? 'BILAN POSITIF' : 'BILAN NÉGATIF', big: `${a.net >= 0 ? '+' : ''}${fmtG(Math.round(a.net * 10) / 10)} pts`,
-    sub: up ? 'Tu avances. Garde ce rythme.' : 'Plus de temps perdu que de temps utile : tes stats reculent.', chips,
-    lines: [`Puissance ${dp >= 0 ? '+' : ''}${dp.toFixed(2).replace('.', ',')} par rapport à avant ce bilan`] });
+  const neutral = Math.abs(a.net) < 0.05;
+  celebrate({ kind: neutral ? 'neutral' : up ? 'win' : 'fail', title: neutral ? 'BILAN ÉQUILIBRÉ' : up ? 'BILAN POSITIF' : 'BILAN NÉGATIF', big: `${a.net >= 0 ? '+' : ''}${fmtG(Math.round(a.net * 10) / 10)} pts`,
+    sub: neutral ? 'Rien de plus que tes quêtes déjà comptées.' : up ? 'Tu avances. Garde ce rythme.' : 'Plus de temps perdu que de temps utile : tes stats reculent.', chips,
+    lines: [`Puissance ${dp >= 0 ? '+' : ''}${dp.toFixed(2).replace('.', ',')} par rapport à avant ce bilan`] }).then(() => questCompletedCheck(qWas));
+}
+
+/* =========================================================
+   QUÊTE QUOTIDIENNE (objectifs du jour, automatiques)
+   Accomplie = +100 XP. Ratée (jour terminé, depuis le jour 0) = PÉNALITÉ : −50 XP
+   et −2 points de Discipline ce jour-là.
+   ========================================================= */
+const QUEST_XP = 100, QUEST_PENALTY_XP = 50;
+const isPhysical = l => l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name));
+const isFocus = l => ['live', 'clips', 'lecture'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l));
+function questIndex() {
+  const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0);
+  if (questIndex._k === key) return questIndex._v;
+  const byDate = new Map();
+  const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
+  for (const l of state.logs) { const o = get(l.date); if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30; }
+  for (const m of state.meals) get(m.date).meals.add(m.meal);
+  for (const b of state.bilans) get(b.date).bilan = true;
+  questIndex._k = key; questIndex._v = byDate;
+  return byDate;
+}
+function dailyQuest(date) {
+  const cfg = state.questCfg;
+  const o = questIndex().get(date) || { phys: 0, focus: 0, meals: new Set(), bilan: false };
+  const main = ['matin', 'midi', 'soir'].filter(k => o.meals.has(k)).length;
+  const goals = [];
+  if (cfg.sport > 0) goals.push({ key: 'sport', icon: '🏋️', label: 'Entraînement physique', cur: o.phys, target: cfg.sport, unit: 'min' });
+  if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
+  if (cfg.meals > 0) goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
+  if (cfg.bilan) goals.push({ key: 'bilan', icon: '⚖️', label: 'Bilan du jour saisi', cur: o.bilan ? 1 : 0, target: 1, unit: '' });
+  goals.forEach(g => { g.done = g.cur >= g.target; });
+  return { goals, done: goals.length > 0 && goals.every(g => g.done), count: goals.filter(g => g.done).length };
+}
+/* jours passés (depuis le jour 0) : accomplis / ratés */
+function questHistory(today) {
+  const start = state.startDate;
+  const key = today + '|' + start + '|' + (questIndex._k || '');
+  questIndex();
+  if (questHistory._k === today + '|' + start + '|' + questIndex._k) return questHistory._v;
+  const done = new Set(), failed = new Set();
+  if (start < today) {
+    let d = start, guard = 0;
+    while (d < today && guard++ < 4000) { (dailyQuest(d).done ? done : failed).add(d); d = addDays(d, 1); }
+  }
+  if (dailyQuest(today).done) done.add(today);
+  questHistory._k = today + '|' + start + '|' + questIndex._k; questHistory._v = { done, failed };
+  return questHistory._v;
+}
+const questXp = () => { const h = questHistory(todayKey()); return h.done.size * QUEST_XP - h.failed.size * QUEST_PENALTY_XP; };
+
+/* Orbe d'XP qui s'envole vers la barre de niveau */
+function flyXp(fromRect, xp) {
+  const target = $('#xp-target .bar') || $('#xp-target');
+  if (!fromRect || !target) return Promise.resolve();
+  const tr = target.getBoundingClientRect();
+  const orb = document.createElement('div');
+  orb.className = 'xp-orb';
+  orb.textContent = `+${xp} XP`;
+  const x0 = fromRect.left + fromRect.width / 2, y0 = fromRect.top + fromRect.height / 2;
+  const x1 = tr.left + tr.width * 0.6, y1 = tr.top + tr.height / 2;
+  orb.style.left = x0 + 'px'; orb.style.top = y0 + 'px';
+  document.body.appendChild(orb);
+  return new Promise(res => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      orb.style.transform = `translate(-50%, -50%) translate(${x1 - x0}px, ${y1 - y0}px) scale(.45)`;
+      orb.style.opacity = '0.2';
+    }));
+    setTimeout(() => { orb.remove(); target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash'); sfx('tap'); res(); }, 760);
+  });
+}
+function questCompletedCheck(wasDone) {
+  const q = dailyQuest(todayKey());
+  if (!wasDone && q.done) {
+    return celebrate({ kind: 'win', icon: '!', title: '[QUÊTE QUOTIDIENNE] ACCOMPLIE', big: `+${QUEST_XP} XP`, count: QUEST_XP, sub: 'Préparation pour devenir plus fort : terminée.', chips: q.goals.map(g => g.label) });
+  }
+  return Promise.resolve();
+}
+
+function renderQuestWindow(today) {
+  const q = dailyQuest(today);
+  const h = questHistory(today);
+  const yest = addDays(today, -1);
+  const now = new Date();
+  const minsLeft = (24 * 60) - (now.getHours() * 60 + now.getMinutes());
+  const warn = !q.done && now.getHours() >= 20;
+  const lv = levelInfo(totalXp());
+  return `
+    <section class="panel mini-lvl" id="xp-target">
+      <span class="ml-lab">NIVEAU</span><b class="ml-num">${lv.level}</b>
+      <div class="bar xp energy"><i class="xp-flow" aria-hidden="true"></i><span style="width:${(lv.into / lv.need) * 100}%" ${anim.prev ? `data-w-from="${anim.prev.level < lv.level ? 0 : anim.prev.pct}"` : ''}></span></div>
+      <span class="ml-xp">${fmtNum(lv.into)}/${fmtNum(lv.need)}</span>
+    </section>
+    ${h.failed.has(yest) ? `<section class="panel penalty-banner"><b>⚠ PÉNALITÉ APPLIQUÉE</b><span>La quête quotidienne d'hier n'a pas été accomplie : −${QUEST_PENALTY_XP} XP et Discipline en baisse.</span></section>` : ''}
+    <section class="panel quest-win ${q.done ? 'done' : ''} ${warn ? 'warn' : ''}">
+      <div class="qw-scan" aria-hidden="true"></div>
+      <div class="qw-top"><span class="qw-bang">!</span><b class="qw-title">[QUÊTE QUOTIDIENNE]</b></div>
+      <div class="qw-sub">Préparation pour devenir plus fort</div>
+      <div class="qw-goals">
+        ${q.goals.map((g, i) => `
+          <div class="qw-goal casc ${g.done ? 'done' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''}" style="--j:${i}">
+            <span class="qw-ico">${g.icon}</span>
+            <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}</span>
+            <b class="qw-val">${g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
+            <i class="qw-check" aria-hidden="true">✓</i>
+            <em class="qw-prog" style="width:${Math.min(100, (g.cur / g.target) * 100)}%"></em>
+          </div>`).join('')}
+      </div>
+      <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE · +${QUEST_XP} XP obtenus` : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
+      ${q.done ? '' : `<div class="qw-pen ${warn ? 'on' : ''}">⚠ PÉNALITÉ si non accomplie avant minuit : −${QUEST_PENALTY_XP} XP, Discipline en baisse${warn ? ` · reste ${Math.floor(minsLeft / 60)} h ${pad2(minsLeft % 60)}` : ''}</div>`}
+    </section>`;
 }
 
 /* =========================================================
@@ -2134,6 +2303,7 @@ function renderToday() {
     </button>`).join('');
 
   return `
+    ${renderQuestWindow(today)}
     <section class="panel">
       <div class="day-summary">
         <div>
@@ -2154,7 +2324,7 @@ function renderToday() {
 
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Journal du jour</div></div>
-      ${logs.length ? logs.map(l => entryHtml(l)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>Aucune quête aujourd'hui. Choisis une activité au-dessus.</div>`}
+      ${logs.length ? logs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>Aucune quête aujourd'hui. Choisis une activité au-dessus.</div>`}
     </section>
   `;
 }
@@ -2239,6 +2409,8 @@ function addLog(activity, minutes, note, date) {
   log.verdict = j.verdict;
   log.xp = Math.max(1, Math.round(log.xp * j.mult));
   ui.lastLogId = log.id;
+  const qBefore = dailyQuest(todayKey());
+  snapshotForAnim();
   state.logs.push(log);
   save();
   const after = levelInfo(totalXp());
@@ -2248,8 +2420,12 @@ function addLog(activity, minutes, note, date) {
     .filter(g => g.d >= 0.01)
     .map(g => `${statByKey[g.k].name} +${g.d.toFixed(2).replace('.', ',')}`);
 
+  const qAfter = dailyQuest(todayKey());
+  ui.justDone = qAfter.goals.filter(g => g.done && !(qBefore.goals.find(x => x.key === g.key) || {}).done).map(g => g.key);
   render();
-  celebrate({
+  ui.justDone = [];
+  if (j.mult < 0.95) { sfx('fail'); haptic(2); } else { sfx('success'); haptic(); }
+  flyXp(ui.tapRect, log.xp).then(() => celebrate({
     kind: j.mult < 0.95 ? 'fail' : 'win',
     title: j.mult < 0.95 ? 'QUÊTE VALIDÉE… DE JUSTESSE' : j.mult > 1.05 ? 'QUÊTE ACCOMPLIE · EXCELLENT' : 'QUÊTE ACCOMPLIE',
     icon: log.icon,
@@ -2258,10 +2434,11 @@ function addLog(activity, minutes, note, date) {
     sub: `${log.name}${log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
     chips: gains,
     lines: j.verdict ? ['Jugement du Système : ' + j.verdict] : [],
-  }).then(() => {
-    if (after.level > before.level) {
-      const rb = rankFor(before.level), ra = rankFor(after.level);
-      showLevelUp(after.level, ra.letter !== rb.letter ? ra : null);
+  })).then(() => questCompletedCheck(qBefore.done)).then(() => {
+    const lvNow = levelInfo(totalXp());
+    if (lvNow.level > before.level) {
+      const rb = rankFor(before.level), ra = rankFor(lvNow.level);
+      showLevelUp(lvNow.level, ra.letter !== rb.letter ? ra : null);
     }
   });
 }
@@ -2389,8 +2566,33 @@ function maybeShowMonthReport() {
   });
 }
 
+/* Jour positif (stats en hausse, quête accomplie) ou négatif (stats en baisse, pénalité) */
+function dayMood(k, hst, qh) {
+  const v = hst.history.get(k), p = hst.history.get(addDays(k, -1));
+  let score = 0;
+  if (v && p) score += powerOf(v) - powerOf(p);
+  if (qh.done.has(k)) score += 0.05;
+  if (qh.failed.has(k)) score -= 0.2;
+  if (Math.abs(score) < 0.005) return '';
+  return score > 0 ? 'pos' : 'neg';
+}
+function dayVerdictHtml(k, hst, qh) {
+  if (k > todayKey()) return '';
+  const v = hst.history.get(k), p = hst.history.get(addDays(k, -1));
+  const d = v && p ? powerOf(v) - powerOf(p) : null;
+  const bil = state.bilans.find(b => b.date === k);
+  const parts = [];
+  if (d != null) parts.push(`Puissance ${d >= 0 ? '+' : ''}${d.toFixed(2).replace('.', ',')}`);
+  if (qh.done.has(k)) parts.push('✓ quête quotidienne');
+  if (qh.failed.has(k)) parts.push('⚠ PÉNALITÉ');
+  if (bil) { const a = analyzeBilan(bil, k); parts.push(`bilan ${a.net >= 0 ? '+' : ''}${fmtG(Math.round(a.net * 10) / 10)} pts`); }
+  if (!parts.length) return '';
+  const mood = dayMood(k, hst, qh);
+  return `<div class="day-verdict ${mood ? 'm-' + mood : ''}">${mood === 'pos' ? '▲ JOUR POSITIF' : mood === 'neg' ? '▼ JOUR NÉGATIF' : '= JOUR NEUTRE'}<span>${parts.join(' · ')}</span></div>`;
+}
 function renderHistory() {
   const today = todayKey();
+  const hst = computeStats(state.logs, today), qh = questHistory(today);
   if (!ui.calMonth) ui.calMonth = today.slice(0, 7);
   if (!ui.selectedDay) ui.selectedDay = today;
   const [y, m] = ui.calMonth.split('-').map(Number);
@@ -2408,8 +2610,9 @@ function renderHistory() {
     const xp = xpByDay[k] || 0;
     if (xp) { monthXp += xp; monthDays++; }
     const lv = !xp ? '' : xp < 60 ? 'lv1' : xp < 150 ? 'lv2' : xp < 300 ? 'lv3' : 'lv4';
-    const cls = ['cal-day', lv, k === today ? 'today' : '', k === ui.selectedDay ? 'selected' : '', k > today ? 'future' : ''].join(' ');
-    cells += `<button type="button" class="${cls}" data-day-pick="${k}">${d}${xp ? `<small>${xp}</small>` : ''}</button>`;
+    const mood = dayMood(k, hst, qh);
+    const cls = ['cal-day', lv, mood ? 'm-' + mood : '', k === today ? 'today' : '', k === ui.selectedDay ? 'selected' : '', k > today ? 'future' : ''].join(' ');
+    cells += `<button type="button" class="${cls}" style="--j:${d}" data-day-pick="${k}">${d}${xp ? `<small>${xp}</small>` : ''}</button>`;
   }
 
   const sel = ui.selectedDay;
@@ -2447,7 +2650,8 @@ function renderHistory() {
         <div class="date-glow">${esc(fmtDayLong(sel))}</div>
         <div class="entry-xp">${fmtNum(selXp)} XP</div>
       </div>
-      ${selLogs.length ? selLogs.map(l => entryHtml(l)).join('') : `<div class="empty">Aucune quête ce jour-là.</div>`}
+      ${dayVerdictHtml(sel, hst, qh)}
+      ${selLogs.length ? selLogs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty">Aucune quête ce jour-là.</div>`}
     </section>
 
     ${renderMonthReport(ui.calMonth, today)}
@@ -2455,7 +2659,7 @@ function renderHistory() {
     <section class="panel">
       <div class="panel-head"><div class="panel-title">XP par semaine</div></div>
       ${weeks.map((w, i) => `
-        <div class="week-row">
+        <div class="week-row casc" style="--j:${i}">
           <div class="week-top">
             <span>${i === 0 ? 'Cette semaine' : i === 1 ? 'Semaine dernière' : `Sem. du ${fmtDayShort(w.start)}`}<span class="faint small"> · ${w.days} j actif${w.days > 1 ? 's' : ''}</span></span>
             <b>${fmtNum(w.xp)} XP</b>
@@ -2518,6 +2722,25 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Quête quotidienne</div></div>
+      <p class="small muted" style="margin-top:0">Objectifs du jour. Accomplie = +${QUEST_XP} XP ; ratée à minuit = −${QUEST_PENALTY_XP} XP et Discipline en baisse. Mets 0 pour retirer un objectif.</p>
+      <div class="btn-row">
+        <label class="field"><span>Sport (min)</span><input class="input" data-quest="sport" inputmode="numeric" value="${state.questCfg.sport}"></label>
+        <label class="field"><span>Travail concentré (min)</span><input class="input" data-quest="focus" inputmode="numeric" value="${state.questCfg.focus}"></label>
+      </div>
+      <div class="btn-row">
+        <label class="field" style="margin-bottom:0"><span>Repas notés (0 à 3)</span><input class="input" data-quest="meals" inputmode="numeric" value="${state.questCfg.meals}"></label>
+        <label class="field toggle" style="margin-bottom:0"><span>Bilan du jour</span><input type="checkbox" data-quest="bilan" ${state.questCfg.bilan ? 'checked' : ''}></label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Effets</div></div>
+      <label class="field toggle"><span>🔊 Sons du Système</span><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}></label>
+      <label class="field toggle" style="margin-bottom:0"><span>📳 Vibrations (iPhone iOS 18+ et Android)</span><input type="checkbox" data-pref="vibrate" ${prefs.vibrate ? 'checked' : ''}></label>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><div class="panel-title">Synchronisation</div></div>
       <div id="sync-panel">${syncPanelInner()}</div>
     </section>
@@ -2557,7 +2780,9 @@ function renderSettings() {
           <li><b>Nutrition</b> : une journée terminée avec 3 repas notés, calories entre objectif −400 et objectif +100, et protéines ≥ 80 % = +${NUTRI_XP} XP et +1 point de Discipline.</li>
           <li><b>Corps</b> : l'hologramme ne s'affine qu'avec ton vrai poids. Perte réaliste : 0,5 à 1 kg par semaine.</li>
           <li><b>Notes de quêtes</b> : le Système les lit. « Intense, record, concentré » = jusqu'à ×1,5 d'XP ; « distrait, fatigué, pas motivé » = jusqu'à ×0,6.</li>
-          <li><b>Concentration</b> : touche ＋ pour raconter ta journée. Travail, apprentissage, montage, live et sport comptent pour ; réseaux, vidéos, jeux et temps perdu comptent contre (de −3 à +3).</li>
+          <li><b>Bilan du jour</b> (onglet Statistiques) : ce que tu as accompli fait monter les stats concernées (30 min = 1 point) ; ce qui t'a fait perdre du temps les fait baisser (1 h = −2,5 points). Une journée négative fait reculer tes stats et supprime le bonus de régularité.</li>
+          <li><b>Poids</b> : chaque kg perdu vers l'objectif = +${BODY_XP_PER_KG} XP, chaque kg repris = −${BODY_XP_PER_KG} XP. Ton niveau suit ton corps.</li>
+          <li><b>Quête quotidienne</b> : accomplie = +${QUEST_XP} XP ; ratée = PÉNALITÉ (−${QUEST_PENALTY_XP} XP, Discipline −2 points).</li>
           <li><b>Progression</b> : calculée sur toute l'année depuis le jour 0 : 40 % stats, 35 % corps (poids), 25 % nutrition (30 derniers jours).</li>
           <li><b>Rangs du corps</b> : E = départ, D/C/B = étapes, A = ton objectif (${fmtKg(state.body.goalWeight)} kg, < ${state.body.goalFat + 1} % de graisse), S = au-delà.</li>
           <li><b>Stats</b> (sur 100, départ à 10) : elles montent un peu chaque jour où tu travailles le domaine. Plus une stat est haute, plus elle monte lentement. En faire 6 h d'un coup n'apporte presque pas plus que 2 h : la régularité paie.</li>
@@ -2778,6 +3003,8 @@ document.addEventListener('click', e => {
 
   const act = t.closest('[data-log-activity]');
   if (act) {
+    ui.tapRect = act.getBoundingClientRect();
+    sfx('tap'); haptic();
     const a = state.activities.find(x => x.id === act.dataset.logActivity);
     if (a) openLogSheet(a);
     return;
@@ -2829,6 +3056,22 @@ document.addEventListener('click', e => {
   if (t.closest('[data-landscape]')) return openLandscape();
   if (t.closest('[data-landscape-close]')) return closeLandscape();
 
+  const ptf = t.closest('#view [data-prog-tf]');
+  if (ptf) {
+    ui.progTf = ptf.dataset.progTf;
+    const today = todayKey(), st = computeStats(state.logs, today);
+    const el = $('#prog');
+    if (el) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = renderProgression(progressionInfo(today, st), today >= st.start, st).trim();
+      const nu = wrap.firstElementChild;
+      nu.classList.add('switch');
+      el.replaceWith(nu);
+      runCountUps(nu);
+      sfx('tap'); haptic();
+    }
+    return;
+  }
   if (t.closest('#view [data-bilan="save"]')) return saveBilan();
   if (t.closest('#view [data-goto-bilan]')) { go('stats'); setTimeout(() => { const el = $('#bilan'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 350); return; }
   const sy = t.closest('#view [data-sync]');
@@ -2878,6 +3121,25 @@ document.addEventListener('change', e => {
     save();
     e.target.value = fmtKg(kg);
     toast('Objectif mis à jour', `${fmtKg(state.body.startWeight)} kg → ${fmtKg(state.body.goalWeight)} kg`);
+  }
+  if (e.target.dataset && e.target.dataset.pref) {
+    prefs[e.target.dataset.pref] = e.target.checked;
+    savePrefs();
+    if (e.target.checked) { sfx('success'); haptic(); }
+    return;
+  }
+  if (e.target.dataset && e.target.dataset.quest) {
+    const k = e.target.dataset.quest;
+    if (k === 'bilan') state.questCfg.bilan = e.target.checked;
+    else {
+      const max = { sport: 600, focus: 900, meals: 3 }[k];
+      const v = Math.round(parseFloat(e.target.value.replace(',', '.')));
+      if (!Number.isFinite(v) || v < 0 || v > max) { toast('Valeur invalide', `Entre 0 et ${max}.`, 'warn'); e.target.value = state.questCfg[k]; return; }
+      state.questCfg[k] = v;
+    }
+    touchSettings(); save();
+    toast('Quête quotidienne mise à jour');
+    return;
   }
   if (e.target.dataset && e.target.dataset.date) {
     const v = e.target.value;
