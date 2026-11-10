@@ -814,7 +814,7 @@ select.input { appearance: none; -webkit-appearance: none; font-size: 15px; padd
 .celebrate.c-neutral { --c: #a78bff; --c2: #e3d4ff; }
 .celebrate.out { animation: celout .28s ease forwards; }
 @keyframes celout { to { opacity: 0; transform: scale(1.05); } }
-.cel-rays { position: absolute; width: 900px; height: 900px; left: 50%; top: 50%; margin: -450px 0 0 -450px;
+.cel-rays { position: absolute; width: 640px; height: 640px; left: 50%; top: 50%; margin: -320px 0 0 -320px; will-change: transform;
   background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--c) 35%, transparent) 0 6deg, transparent 6deg 18deg);
   mask-image: radial-gradient(circle, #000 0 20%, transparent 62%); -webkit-mask-image: radial-gradient(circle, #000 0 20%, transparent 62%);
   animation: spin 9s linear infinite, raysin .6s ease; opacity: .8; }
