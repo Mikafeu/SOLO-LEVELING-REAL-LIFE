@@ -851,3 +851,53 @@ select.input { appearance: none; -webkit-appearance: none; font-size: 15px; padd
 .rep-grid { display: grid; gap: 8px; }
 .rep-grid div { display: flex; justify-content: space-between; font-size: 14px; padding: 8px 10px; border-radius: 10px; background: rgba(56, 200, 255, .05); border: 1px solid rgba(56, 200, 255, .12); }
 .rep-grid b { font-family: var(--mono); }
+
+/* =========================================================
+   v1.5 — onglet Statistiques, vue paysage, saisie des repas
+   ========================================================= */
+.tab { font-size: 10px; padding: 0 2px; }
+.tab-icon { font-size: 20px; }
+
+.sit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sit { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(56, 200, 255, .18); background: rgba(56, 200, 255, .05); }
+.sit span { display: block; font-size: 11px; color: var(--text-dim); font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.sit b { display: block; font-size: 22px; font-family: var(--mono); color: #fff; margin-top: 2px; text-shadow: 0 0 10px rgba(56, 200, 255, .6); }
+.sit small { display: block; font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+.sit.up b { color: #2bff9a; text-shadow: 0 0 10px rgba(43, 255, 154, .6); }
+.sit.down b { color: #ff7d94; text-shadow: 0 0 10px rgba(255, 77, 109, .6); }
+.sit[class*="prog-"] { border-color: var(--pc); box-shadow: 0 0 14px color-mix(in srgb, var(--pc) 35%, transparent); }
+.sit[class*="prog-"] b { color: var(--pc); text-shadow: 0 0 10px var(--pc); }
+.sit-stats { margin-top: 12px; display: grid; gap: 6px; }
+.sit-stats div { display: grid; grid-template-columns: 1fr auto 60px 26px; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(56, 200, 255, .04); font-size: 14px; }
+.sit-stats b { font-family: var(--mono); color: var(--neon-2); }
+.sit-stats i { font-style: normal; font-family: var(--mono); font-size: 12px; text-align: right; }
+.sit-stats em { font-style: normal; font-weight: 900; font-size: 12px; text-align: center; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--neon-2); }
+
+/* vue paysage plein écran */
+.landscape { position: fixed; inset: 0; z-index: 90; background: #02060f; animation: fadeIn .2s ease; }
+.landscape .ls-inner { position: absolute; inset: 0; padding: 14px 20px; overflow: auto; }
+.landscape.rot .ls-inner { width: 100vh; height: 100vw; inset: auto; top: 0; left: 100vw; transform-origin: top left; transform: rotate(90deg); padding: 14px 20px calc(var(--safe-bottom) + 10px); }
+.ls-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.landscape .chart-keys { padding-bottom: 6px; }
+.landscape .chart-tf { margin-bottom: 6px; }
+.landscape .chart-tf button { min-height: 32px; }
+
+/* téléphone tourné : l'onglet Statistiques profite de la largeur */
+@media (orientation: landscape) and (max-height: 520px) {
+  #app { max-width: 900px; }
+  .holo-wrap { height: 80vh; }
+}
+
+/* saisie des repas */
+.food-tot { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 12px; padding: 10px; margin-bottom: 6px; border-radius: 12px; border: 1px solid var(--line-strong); background: rgba(56, 200, 255, .08); }
+.food-tot b { width: 100%; font-family: var(--mono); font-size: 22px; color: #fff; text-shadow: 0 0 10px rgba(56, 200, 255, .7); }
+.food-tot span { font-size: 13px; color: var(--text); }
+.food-g.est { border-color: rgba(255, 200, 87, .8); color: #ffd27a; }
+
+.landscape .ls-head { margin-bottom: 4px; }
+.landscape .ls-head .icon-btn { width: 36px; height: 36px; }
+.landscape .chip.small { min-height: 28px; padding: 4px 10px; }
+.landscape .chart-tf button { min-height: 28px; font-size: 13px; }
+.landscape .chart-sum { margin-bottom: 4px; }
+.landscape .chart-sum b { font-size: 18px; }
+.landscape .ls-inner > .small { display: none; }

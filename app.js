@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -451,7 +451,7 @@ function celebrate({ kind = 'win', title = '', icon = '', big = '', count = null
 /* =========================================================
    Navigation
    ========================================================= */
-const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', history: 'Journal des quêtes', settings: 'Réglages' };
+const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', stats: 'Statistiques', history: 'Journal des quêtes', settings: 'Réglages' };
 let currentTab = 'home';
 const ui = { calMonth: null, selectedDay: null, holoMode: 'now', holoRank: null, day0: false, statsTab: 'stats', chartKey: 'power', chartTf: 'J', photoPose: 'face', mealDay: null };
 
@@ -465,7 +465,7 @@ function go(tab) {
 
 function render() {
   const view = $('#view');
-  const fn = { home: renderHome, today: renderToday, meals: renderMeals, history: renderHistory, settings: renderSettings }[currentTab];
+  const fn = { home: renderHome, today: renderToday, meals: renderMeals, stats: renderStatsTab, history: renderHistory, settings: renderSettings }[currentTab];
   view.innerHTML = fn();
   view.style.animation = 'none'; void view.offsetWidth; view.style.animation = '';
   if (currentTab === 'home') mountHolo();
@@ -575,11 +575,8 @@ function renderHome() {
     </section>` : ''}
 
     <section class="panel">
-      <div class="seg stats-tabs">
-        <button type="button" class="${ui.statsTab !== 'chart' ? 'on' : ''}" data-stats-tab="stats">Statistiques</button>
-        <button type="button" class="${ui.statsTab === 'chart' ? 'on' : ''}" data-stats-tab="chart">📈 Graphique</button>
-      </div>
-      ${ui.statsTab === 'chart' ? renderChart(st, today) : statsHtml}
+      <div class="panel-head"><div class="panel-title">Statistiques</div><button class="btn small ghost" data-go="stats">📈 Graphique ›</button></div>
+      ${statsHtml}
     </section>
 
     ${renderProgression(prog, started, st)}
@@ -615,6 +612,70 @@ function renderProgression(prog, started, st) {
     </section>`;
 }
 
+/* =========================================================
+   Onglet Statistiques : où tu te situes + graphique (portrait ou paysage)
+   ========================================================= */
+function renderStatsTab() {
+  const today = todayKey();
+  const st = computeStats(state.logs, today);
+  const prog = progressionInfo(today, st);
+  const lv = levelInfo(totalXp());
+  const rank = rankFor(lv.level);
+  const pNow = powerOf(st.values), p0 = powerOf(st.base);
+  const monthAgo = st.history.get(addDays(today, -30));
+  const pMonth = monthAgo ? powerOf(monthAgo) : null;
+  let best = 0;
+  for (const v of st.history.values()) best = Math.max(best, powerOf(v));
+  const b = bodyProgress();
+  const comp = composition(null);
+  const sign = v => (v >= 0 ? '+' : '') + fmtStat(v);
+  const card = (lab, val, sub, cls = '') => `<div class="sit ${cls}"><span>${lab}</span><b>${val}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  return `
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Où tu te situes</div><div class="panel-sub">${today >= st.start ? `Jour ${prog.day + 1}` : 'Avant le jour 0'}</div></div>
+      <div class="sit-grid">
+        ${card('Puissance', fmtStat(pNow), `jour 0 : ${fmtStat(p0)} · record ${fmtStat(best)}`)}
+        ${card('Depuis le jour 0', sign(pNow - p0), 'moyenne des 4 stats', pNow - p0 > 0.05 ? 'up' : pNow - p0 < -0.05 ? 'down' : '')}
+        ${card('Sur 30 jours', pMonth == null ? '—' : sign(pNow - pMonth), pMonth == null ? 'pas encore de recul' : 'par rapport au mois dernier', pMonth != null && pNow - pMonth > 0.05 ? 'up' : pMonth != null && pNow - pMonth < -0.05 ? 'down' : '')}
+        ${card('Progression', `${prog.grade} · ${prog.score.toFixed(0)}`, prog.next ? `rang ${prog.next[0]} à ${prog.next[1]}` : 'rang maximal', 'prog-' + prog.grade)}
+        ${card('Charisme', `Rang ${rank.letter}`, `niveau ${lv.level}`)}
+        ${card('Corps', `${fmtKg(b.cur)} kg`, `${fmtPct(comp.fat)} % graisse · ${Math.round(b.progress * 100)} % de l'objectif`)}
+      </div>
+      <div class="sit-stats">${STATS.map(s => `<div><span>${s.icon} ${s.name}</span><b>${fmtStat(st.values[s.key])}</b><i class="${st.values[s.key] - st.base[s.key] >= 0 ? 'trend-up' : 'trend-down'}">${sign(st.values[s.key] - st.base[s.key])}</i><em>${gradeFor(st.values[s.key])}</em></div>`).join('')}</div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Graphique</div><button type="button" class="btn small" data-landscape="1">⟲ Paysage</button></div>
+      ${renderChart(st, today, { maxJ: 45, maxM: 12 })}
+      <p class="small faint" style="margin-bottom:0">Tourne ton téléphone ou touche « Paysage » pour voir le graphique en grand.</p>
+    </section>`;
+}
+
+/* Vue paysage plein écran (fonctionne même si la rotation de l'écran est bloquée) */
+function landscapeHtml() {
+  const today = todayKey();
+  const st = computeStats(state.logs, today);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const W = Math.max(vw, vh) - 40, H = Math.min(vw, vh) - 175;
+  return `
+    <div class="ls-head"><span class="sheet-tag">[SYSTÈME] STATISTIQUES</span><button type="button" class="icon-btn" data-landscape-close="1" aria-label="Fermer">✕</button></div>
+    ${renderChart(st, today, { W, H: Math.max(130, H), maxJ: 90, maxM: 24, labels: 12 })}`;
+}
+function openLandscape() {
+  closeLandscape();
+  const ov = document.createElement('div');
+  ov.id = 'landscape';
+  ov.className = 'landscape' + (window.innerHeight > window.innerWidth ? ' rot' : '');
+  ov.innerHTML = `<div class="ls-inner">${landscapeHtml()}</div>`;
+  document.body.appendChild(ov);
+}
+function refreshLandscape() {
+  const ov = $('#landscape');
+  if (ov) { ov.className = 'landscape' + (window.innerHeight > window.innerWidth ? ' rot' : ''); $('.ls-inner', ov).innerHTML = landscapeHtml(); }
+}
+function closeLandscape() { const ov = $('#landscape'); if (ov) ov.remove(); }
+window.addEventListener('resize', () => { if ($('#landscape')) refreshLandscape(); else if (currentTab === 'stats') render(); });
+
 /* ---------- Graphique façon trading (Jour / Mois / Année) ---------- */
 const CHART_SERIES = [
   { key: 'power', label: 'Puissance' }, { key: 'physique', label: 'Physique' }, { key: 'concentration', label: 'Concentration' },
@@ -645,7 +706,7 @@ function dailySeries(key, st, today) {
   for (const [d, vals] of st.history) out.push({ d, v: key === 'power' ? powerOf(vals) : vals[key] });
   return out;
 }
-function candlesOf(pts, tf) {
+function candlesOf(pts, tf, max) {
   const groups = new Map();
   pts.forEach((p, i) => {
     const k = tf === 'J' ? p.d : tf === 'M' ? p.d.slice(0, 7) : p.d.slice(0, 4);
@@ -654,18 +715,18 @@ function candlesOf(pts, tf) {
     g.h = Math.max(g.h, p.v, g.o); g.l = Math.min(g.l, p.v, g.o); g.c = p.v;
   });
   const list = [...groups.values()];
-  return list.slice(tf === 'J' ? -30 : tf === 'M' ? -12 : -10);
+  return list.slice(-(max || (tf === 'J' ? 30 : tf === 'M' ? 12 : 10)));
 }
-function renderChart(st, today) {
+function renderChart(st, today, opt = {}) {
   const key = ui.chartKey || 'power', tf = ui.chartTf || 'J';
   const pts = dailySeries(key, st, today);
-  const cs = candlesOf(pts, tf);
+  const cs = candlesOf(pts, tf, tf === 'J' ? opt.maxJ : tf === 'M' ? opt.maxM : null);
   const inverse = key === 'poids';
   const head = `
     <div class="chart-keys">${CHART_SERIES.map(c => `<button type="button" class="chip small ${c.key === key ? 'on' : ''}" data-chart-key="${c.key}">${c.label}</button>`).join('')}</div>
     <div class="seg chart-tf">${[['J', 'Jour'], ['M', 'Mois'], ['A', 'Année']].map(([k, l]) => `<button type="button" class="${k === tf ? 'on' : ''}" data-chart-tf="${k}">${l}</button>`).join('')}</div>`;
   if (cs.length < 2) return head + `<div class="empty"><span class="sys">[SYSTÈME]</span>Pas encore assez de données. Le graphique se remplit jour après jour.</div>`;
-  const W = 340, H = 190, PL = 6, PR = 44, PT = 10, PB = 22;
+  const W = opt.W || 340, H = opt.H || 190, PL = 6, PR = 44, PT = 10, PB = 22;
   let lo = Math.min(...cs.map(c => c.l)), hi = Math.max(...cs.map(c => c.h));
   if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
   const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
@@ -673,7 +734,7 @@ function renderChart(st, today) {
   const Y = v => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
   const fmtV = v => key === 'xp' ? fmtNum(v) : (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
   const lab = c => tf === 'J' ? String(+c.k.slice(8)) : tf === 'M' ? MONTHS_SHORT[+c.k.slice(5) - 1] : c.k;
-  const every = Math.ceil(n / 6);
+  const every = Math.ceil(n / (opt.labels || 6));
   const body = cs.map((c, i) => {
     const x = PL + step * i + step / 2;
     const up = inverse ? c.c <= c.o : c.c >= c.o;
@@ -1171,12 +1232,24 @@ function loadCiqual() {
   if (ciqual) return Promise.resolve(ciqual);
   if (!ciqualLoading) {
     ciqualLoading = fetch('data/ciqual.json').then(r => r.json()).then(d => {
-      ciqual = d.map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
+      ciqual = d.concat(EXTRA_FOODS).map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
       return ciqual;
     }).catch(e => { ciqualLoading = null; throw e; });
   }
   return ciqualLoading;
 }
+/* Produits courants absents de Ciqual (valeurs pour 100 g ou 100 ml, étiquettes des fabricants) */
+const EXTRA_FOODS = [
+  { c: 'x1', n: 'Coca-Cola (canette 33 cl)', grp: 'boissons', kcal: 42, p: 0, g: 10.6, l: 0 },
+  { c: 'x2', n: 'Coca-Cola zéro / light', grp: 'boissons', kcal: 0.3, p: 0, g: 0, l: 0 },
+  { c: 'x3', n: 'Red Bull (canette 25 cl)', grp: 'boissons', kcal: 46, p: 0, g: 11, l: 0 },
+  { c: 'x4', n: 'Monster Energy (canette 50 cl)', grp: 'boissons', kcal: 47, p: 0, g: 11, l: 0 },
+  { c: 'x5', n: 'Whey protéine en poudre (moyenne)', grp: 'compléments', kcal: 380, p: 75, g: 8, l: 6 },
+  { c: 'x6', n: 'Big Mac (McDonald\'s)', grp: 'fast food', kcal: 230, p: 11.9, g: 18.7, l: 11.4 },
+  { c: 'x7', n: 'French tacos (moyenne, 1 viande, frites, sauce fromagère)', grp: 'fast food', kcal: 245, p: 10.5, g: 24, l: 12 },
+  { c: 'x8', n: 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', grp: 'boissons', kcal: 30, p: 0, g: 7.5, l: 0 },
+];
+
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
 const FOOD_DEFAULTS = {
   'riz': 'Riz blanc, cuit, non salé', 'riz blanc': 'Riz blanc, cuit, non salé',
@@ -1194,6 +1267,26 @@ const FOOD_DEFAULTS = {
   'haricot vert': 'Haricot vert, cuit', 'brocoli': 'Brocoli, cuit', 'jambon': 'Jambon cuit, supérieur', 'emmental': 'Emmental ou emmenthal',
   'nutella': 'Pâte à tartiner chocolat et noisette', 'beurre': 'Beurre à 82% MG, doux', 'miel': 'Miel', 'sucre': 'Sucre blanc',
   'jus orange': "Jus d'orange, pur jus", 'amande': 'Amande (avec peau)', 'beurre cacahuete': "Beurre de cacahuète ou Pâte d'arachide",
+  'viande': 'Viande cuite (aliment moyen)', 'viande hache': 'Boeuf, steak haché 15% MG, cuit', 'dinde': 'Dinde, escalope, sautée/poêlée',
+  'escalope dinde': 'Dinde, escalope, sautée/poêlée', 'escalope': 'Dinde, escalope, sautée/poêlée', 'poulet roti': 'Poulet, viande et peau, rôti/cuit au four',
+  'coca': 'Coca-Cola (canette 33 cl)', 'coca cola': 'Coca-Cola (canette 33 cl)', 'coca zero': 'Coca-Cola zéro / light', 'coca light': 'Coca-Cola zéro / light',
+  'red bull': 'Red Bull (canette 25 cl)', 'redbull': 'Red Bull (canette 25 cl)', 'monster': 'Monster Energy (canette 50 cl)',
+  'whey': 'Whey protéine en poudre (moyenne)', 'proteine': 'Whey protéine en poudre (moyenne)', 'shaker proteine': 'Whey protéine en poudre (moyenne)',
+  'big mac': "Big Mac (McDonald's)", 'tacos': 'French tacos (moyenne, 1 viande, frites, sauce fromagère)', 'french tacos': 'French tacos (moyenne, 1 viande, frites, sauce fromagère)',
+  'kebab': 'Sandwich grec ou Kebab, pita, crudités', 'grec': 'Sandwich grec ou Kebab, pita, crudités', 'sandwich grec': 'Sandwich grec ou Kebab, pita, crudités',
+  'burger': 'Hamburger, provenant de fast food', 'hamburger': 'Hamburger, provenant de fast food', 'cheeseburger': 'Cheeseburger, provenant de fast food',
+  'nugget': 'Volaille, croquette panée ou nuggets', 'pizza': 'Pizza au fromage ou Pizza margherita, préemballée', 'cookie': 'Cookie aux pépites de chocolat',
+  'chip': 'Chips de pommes de terre nature ou aromatisées, standard', 'couscous': 'Graine de couscous (semoule de blé dur précuite), cuite, non salée',
+  'semoule': 'Graine de couscous (semoule de blé dur précuite), cuite, non salée', 'fanta': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
+  'sprite': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'ice tea': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'soda': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
+  'pain mie': 'Pain de mie, complet', 'oeuf brouille': 'Oeuf, brouillé, avec matière grasse',
+  'chocolat': 'Chocolat noir à moins de 70% de cacao, à croquer, tablette', 'chocolat noir': 'Chocolat noir à moins de 70% de cacao, à croquer, tablette',
+  'chocolat lait': 'Chocolat au lait, tablette', 'thon': 'Thon, au naturel, appertisé, égoutté', 'mozzarella': 'Mozzarella au lait de vache',
+  'gruyere': 'Gruyère', 'comte': 'Comté', 'ketchup': 'Ketchup, préemballé', 'mayonnaise': 'Mayonnaise (70% MG min.), préemballée', 'mayo': 'Mayonnaise (70% MG min.), préemballée',
+  'tomate': 'Tomate, crue', 'carotte': 'Carotte, cuite', 'haricot rouge': "Haricot rouge, bouilli/cuit à l'eau", 'pois chiche': "Pois chiche, bouilli/cuit à l'eau",
+  'quinoa': "Quinoa, bouilli/cuit à l'eau, non salé", 'patate douce': 'Patate douce, cuite', 'muesli': 'Muesli (aliment moyen)',
+  'confiture': 'Confiture ou Marmelade, tout type de fruits (aliment moyen)', 'lait entier': 'Lait entier, UHT', 'cafe': 'Café, non instantané, non sucré, prêt à boire',
+  'the': 'Thé infusé, non sucré', 'pate tartiner': 'Pâte à tartiner chocolat et noisette',
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
 
@@ -1204,6 +1297,7 @@ function searchCiqual(query, limit = 8) {
   const nq = normTxt(query);
   const wantsRaw = /\bcru/.test(nq);
   const def = FOOD_DEFAULTS[q.join(' ')];
+  const zeroFat = /\b0\s*%/.test(query);
   const exacts = q.filter(w => w.length > 2).map(w => new RegExp(`(^| )${w}(s|x)?( |$)`));
   const res = [];
   for (const f of ciqual) {
@@ -1224,6 +1318,7 @@ function searchCiqual(query, limit = 8) {
     for (const re of exacts) if (re.test(f._n)) score += 1.5;
     if (!wantsRaw && COOKED_GROUPS.test(f.grp || '')) { if (/\bcuit/.test(f._n)) score += 1; if (/\bcru/.test(f._n)) score -= 0.6; }
     if (def && f.n === def) score += 100;
+    if (zeroFat && /0% MG/.test(f.n)) score += 120 + (/nature/.test(f._n) ? 10 : 0) - f._t.length * 0.5;
     res.push({ f, score, cover: matched / q.length });
   }
   res.sort((a, b) => b.score - a.score);
@@ -1271,32 +1366,58 @@ const PORTIONS = [
   [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbol/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
   [/\bsteak|\bburger|\bhamburger/, 125], [/\bavocat/, 150], [/\btomate/, 120], [/\bpart\b.*pizza|\bpizza/, 150], [/\bsandwich/, 250],
   [/\bportion/, 30], [/\bcafe|\bthe\b/, 200],
+  [/\bcoca|\bfanta|\bsprite|\bice tea|\bsoda/, 330], [/\bred ?bull/, 250], [/\bmonster/, 500], [/\bwhey|\bproteine|\bshaker/, 30],
+  [/\bbig mac/, 219], [/\btacos/, 430], [/\bkebab|\bgrec\b/, 350], [/\bburger|\bcheeseburger/, 120], [/\bnugget/, 17], [/\bcookie/, 30],
+  [/\bpain de mie/, 25], [/\bpain\b/, 60], [/\bescalope/, 120], [/\bpizza/, 400], [/\bpaquet de chips|\bchips/, 45],
 ];
-const WORDNUM = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, demi: 0.5, 'demie': 0.5 };
+const WORDNUM = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, demi: 0.5, demie: 0.5 };
+const UNIT = '(?:kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)';
+/* Découpe le texte en aliments, même sans virgules :
+   "2 pains 50g viande 70g huile d'olive" ou "viande 50g, dinde 400g" */
+function splitFoodText(text) {
+  const t = text.replace(/\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\b(?=\s+[a-zà-ÿœ])/gi, w => String(WORDNUM[w.toLowerCase()]));
+  const parts = t.split(/\n|,|;|\+|\bet\b|\bavec\b|\bpuis\b|\bplus\b/i).map(x => x.trim()).filter(x => x.length > 1);
+  const out = [];
+  const qty = new RegExp(`\\d+(?:[.,]\\d+)?\\s*${UNIT}?(?![a-z%\\d])`, 'gi');
+  for (const p of parts) {
+    const ms = [...p.matchAll(qty)].filter(m => !/^\s*%/.test(p.slice(m.index + m[0].length)));
+    if (ms.length <= 1) { out.push(p); continue; }
+    const startsWithNumber = /^\s*\d/.test(p);
+    let cuts = startsWithNumber ? ms.slice(1).map(m => m.index) : ms.slice(0, -1).map(m => m.index + m[0].length);
+    let last = 0;
+    for (const c of cuts) { const seg = p.slice(last, c).trim(); if (seg) out.push(seg); last = c; }
+    const tail = p.slice(last).trim();
+    if (tail) out.push(tail);
+  }
+  // un morceau sans mot ("125g") appartient à l'aliment d'avant
+  const merged = [];
+  for (const x of out) {
+    if (!/[a-zà-ÿœ]{2,}/i.test(x.replace(new RegExp(`\\d+(?:[.,]\\d+)?\\s*${UNIT}\\b`, 'gi'), '')) && merged.length) merged[merged.length - 1] += ' ' + x;
+    else merged.push(x);
+  }
+  return merged.filter(x => /[a-zà-ÿœ]/i.test(x));
+}
 function parseFoodText(text) {
-  return text
-    .split(/\n|,|;|\+|\bet\b|\bavec\b/i)
-    .map(x => x.trim())
-    .filter(x => x.length > 1)
-    .map(chunk => {
-      const n = normTxt(chunk);
-      let grams = null, name = chunk;
-      const m = chunk.match(/(\d+(?:[.,]\d+)?)\s*(kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)\b/i);
-      if (m) {
-        const v = parseFloat(m[1].replace(',', '.'));
-        const u = m[2].toLowerCase();
-        grams = u.startsWith('k') ? v * 1000 : u === 'cl' ? v * 10 : (u === 'l' || u.startsWith('litre')) ? v * 1000 : v;
-        name = chunk.replace(m[0], ' ');
-      } else {
-        const c = n.match(/^(\d+(?:\.\d+)?|un|une|deux|trois|quatre|cinq|six|demi|demie)\b/);
-        const count = c ? (WORDNUM[c[1]] || parseFloat(c[1])) : 1;
-        const portion = PORTIONS.find(([re]) => re.test(n));
-        if (portion) grams = Math.round(count * portion[1]);
-        if (c) name = chunk.replace(new RegExp('^\\s*' + c[1].replace('.', '[.,]'), 'i'), ' ');
-      }
-      name = name.replace(/\b(de|d'|du|des)\s*$/i, '').replace(/^\s*(de|d'|du|des)\s+/i, '').replace(/\s+/g, ' ').trim();
-      return { text: chunk, query: name || chunk, grams: grams ? Math.round(grams) : null };
-    });
+  return splitFoodText(text).map(chunk => {
+    const n = normTxt(chunk);
+    let grams = null, name = chunk, estimated = false;
+    const m = chunk.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)(?![a-z])`, 'i'));
+    if (m) {
+      const v = parseFloat(m[1].replace(',', '.'));
+      const u = m[2].toLowerCase();
+      grams = u.startsWith('k') ? v * 1000 : u === 'cl' ? v * 10 : (u === 'l' || u.startsWith('litre')) ? v * 1000 : v;
+      name = chunk.replace(m[0], ' ');
+    } else {
+      const c = n.match(/^(\d+(?:\.\d+)?)\b/) || n.match(/\b(\d+(?:\.\d+)?)\s*$/);
+      const count = c ? parseFloat(c[1]) : 1;
+      const sing = n.replace(/([a-z]{3,})s\b/g, '$1');
+      const portion = PORTIONS.find(([re]) => re.test(n) || re.test(sing));
+      if (portion) { grams = Math.round(count * portion[1]); estimated = true; }
+      if (c) name = chunk.replace(new RegExp('(^\\s*' + c[1].replace('.', '[.,]') + '|' + c[1].replace('.', '[.,]') + '\\s*$)'), ' ');
+    }
+    name = name.replace(/\b(de|du|des)\s*$/i, '').replace(/^\s*(de|du|des|d')\s*/i, '').replace(/\s+/g, ' ').trim();
+    return { text: chunk.trim(), query: name || chunk, grams: grams ? Math.round(grams) : null, estimated };
+  });
 }
 
 /* --- calculs --- */
@@ -1419,8 +1540,8 @@ function foodRowHtml(it, i) {
       <div class="food-q">“${esc(it.text)}”</div>
       ${it.cands.length ? `<select class="input food-sel" data-sel="${i}">${opts}</select>` : `<div class="small decay-warn">${it.loading ? 'Recherche…' : 'Aucun aliment trouvé.'}</div>`}
       <div class="food-line">
-        <input class="input food-g" data-grams="${i}" inputmode="decimal" placeholder="grammes" value="${it.grams || ''}">
-        <span class="food-mac">${mac ? `<b>${mac.kcal} kcal</b> · P ${fmtG(mac.p)} · G ${fmtG(mac.g)} · L ${fmtG(mac.l)}` : '<span class="decay-warn">Indique les grammes</span>'}</span>
+        <input class="input food-g ${it.estimated ? 'est' : ''}" data-grams="${i}" inputmode="decimal" placeholder="grammes" value="${it.grams || ''}">
+        <span class="food-mac">${mac ? `<b>${mac.kcal} kcal</b> · P ${fmtG(mac.p)} · G ${fmtG(mac.g)} · L ${fmtG(mac.l)}${it.estimated ? '<br><span class="decay-warn">≈ portion estimée, corrige si besoin</span>' : ''}` : '<span class="decay-warn">Indique les grammes</span>'}</span>
       </div>
       <div class="food-actions">
         <button type="button" class="btn small ghost" data-off="${i}">🏷️ Chercher la marque</button>
@@ -1452,16 +1573,25 @@ function openFoodSheet(meal) {
       const draw = () => {
         $('#food-rows', sheet).innerHTML = items.map(foodRowHtml).join('');
         const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
+        const missing = items.filter(it => !(it.cands[it.sel] && it.grams > 0));
         $('#food-save', sheet).style.display = items.length ? '' : 'none';
-        const tot = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
-        $('#food-total', sheet).textContent = `${ok.length} aliment${ok.length > 1 ? 's' : ''} · ${fmtNum(tot)} kcal`;
+        const tot = ok.reduce((t, it) => { const m = macroOf(it.cands[it.sel], it.grams); t.kcal += m.kcal; t.p += m.p; t.g += m.g; t.l += m.l; return t; }, { kcal: 0, p: 0, g: 0, l: 0 });
+        $('#food-total', sheet).innerHTML = `
+          <div class="food-tot"><b>${fmtNum(tot.kcal)} kcal</b><span>Protéines ${fmtG(tot.p)} g</span><span>Glucides ${fmtG(tot.g)} g</span><span>Lipides ${fmtG(tot.l)} g</span></div>
+          <div>${ok.length} aliment${ok.length > 1 ? 's' : ''} prêt${ok.length > 1 ? 's' : ''}</div>
+          ${missing.length ? `<div class="decay-warn">⚠ Pas encore ajouté${missing.length > 1 ? 's' : ''} : ${missing.map(it => esc(it.query)).join(', ')} — ${missing.some(it => !it.cands.length) ? 'choisis un aliment (🏷️) ou ' : ''}indique les grammes.</div>` : ''}`;
       };
       const searchBrand = async (it, auto = false) => {
         if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche de marques demande Internet.', 'warn'); return; }
         it.loading = true; draw();
         try {
           const res = await searchOFF(it.query);
-          if (res.length) { it.cands = [...res, ...it.cands.filter(c => c.src !== 'off')]; it.sel = 0; }
+          if (res.length) {
+            const local = it.cands.filter(c => c.src !== 'off');
+            // la base officielle reste en tête si elle a bien reconnu l'aliment
+            if (auto && local.length && it.cover >= 0.75) it.cands = [...local, ...res];
+            else { it.cands = [...res, ...local]; it.sel = 0; }
+          }
           else if (!auto) toast('Marque introuvable', 'Essaie avec le nom exact du produit.', 'warn');
         } catch (e) {
           if (!auto) toast('Recherche impossible', 'Open Food Facts ne répond pas.', 'warn');
@@ -1483,7 +1613,7 @@ function openFoodSheet(meal) {
           $('#food-text', sheet).value = '';
           draw();
           // produit probablement de marque (mots inconnus de la base) → recherche automatique
-          fresh.filter(it => it.cover < 1 || !it.cands.length).forEach(it => searchBrand(it, true));
+          fresh.filter(it => it.cover < 0.75 || !it.cands.length).forEach(it => searchBrand(it, true));
           return;
         }
         const off = e.target.closest('[data-off]');
@@ -1510,7 +1640,7 @@ function openFoodSheet(meal) {
         const s = e.target.closest('[data-sel]');
         if (s) { items[+s.dataset.sel].sel = +s.value; draw(); }
         const g = e.target.closest('[data-grams]');
-        if (g) { const v = parseFloat(g.value.replace(',', '.')); items[+g.dataset.grams].grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; draw(); }
+        if (g) { const v = parseFloat(g.value.replace(',', '.')); const it = items[+g.dataset.grams]; it.grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; it.estimated = false; draw(); }
       });
     },
   });
@@ -2363,12 +2493,12 @@ document.addEventListener('click', e => {
     if (lab && !rp.closest('.holo-mode')) lab.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
-  const stt = t.closest('#view [data-stats-tab]');
-  if (stt) { ui.statsTab = stt.dataset.statsTab; return render(); }
-  const ck = t.closest('#view [data-chart-key]');
-  if (ck) { ui.chartKey = ck.dataset.chartKey; return render(); }
-  const ctf = t.closest('#view [data-chart-tf]');
-  if (ctf) { ui.chartTf = ctf.dataset.chartTf; return render(); }
+  const ck = t.closest('[data-chart-key]');
+  if (ck) { ui.chartKey = ck.dataset.chartKey; render(); return refreshLandscape(); }
+  const ctf = t.closest('[data-chart-tf]');
+  if (ctf) { ui.chartTf = ctf.dataset.chartTf; render(); return refreshLandscape(); }
+  if (t.closest('[data-landscape]')) return openLandscape();
+  if (t.closest('[data-landscape-close]')) return closeLandscape();
 
   const action = t.closest('#view [data-action]');
   if (action) {
