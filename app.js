@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -130,7 +130,8 @@ function freshState() {
     meals: [],
     journals: [],
     bilans: [],       // saisie du jour : ce que j'ai accompli / ce qui m'a fait perdre du temps
-    questCfg: { sport: 30, focus: 60, meals: 3, bilan: true, waste: 60 },
+    questCfg: { pushups: 100, sport: 30, focus: 60, meals: 3, bilan: true, waste: 60 },
+    reps: [],         // pompes (et autres répétitions) : { id, date, ts, n }
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -235,8 +236,12 @@ function sanitizeState(raw) {
     s.questCfg = {
       sport: inR(q.sport, 0, 600) ? q.sport : 30, focus: inR(q.focus, 0, 900) ? q.focus : 60,
       meals: inR(q.meals, 0, 4) ? q.meals : 3, bilan: q.bilan !== false, waste: inR(q.waste, 0, 600) ? q.waste : 60,
+      pushups: inR(q.pushups, 0, 2000) ? q.pushups : 100,
     };
   }
+  s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
+    .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
+    .map(r => ({ id: typeof r.id === 'string' ? r.id : uid(), date: r.date, ts: Number.isFinite(r.ts) ? r.ts : 0, n: Math.round(r.n) }));
   s.journals = (Array.isArray(raw.journals) ? raw.journals : [])
     .filter(j => j && isValidKey(j.date) && typeof j.text === 'string')
     .map(j => ({
@@ -319,7 +324,7 @@ const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nut
 let _seriesCache = { key: '', out: null };
 function computeStats(logs, today) {
   const nd = nutritionDays(today);
-  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',') + '|' + state.bilans.map(b => b.date + b.ts).join(',') + '|' + questHistory(today).failed.size + '|' + state.startDate;
+  const key = today + '|' + logs.length + '|' + logs.reduce((s, l) => s + l.xp + (l.quality || 1), 0) + '|' + nd.size + '|' + state.journals.map(j => j.date + j.score).join(',') + '|' + state.bilans.map(b => b.date + b.ts).join(',') + '|' + questHistory(today).failed.size + '|' + state.startDate + '|' + state.reps.length + ':' + state.reps.reduce((t, r) => t + r.n, 0);
   if (logs === state.logs && _seriesCache.key === key) return _seriesCache.out;
   const values = {}, last = {};
   STAT_KEYS.forEach(k => { values[k] = RULES.statStart; last[k] = null; });
@@ -337,6 +342,16 @@ function computeStats(logs, today) {
     for (const k of l.stats) o[k] = (o[k] || 0) + pts;
     byDay.set(l.date, o);
     if (!l.bad) goodDays.add(l.date);
+  }
+  // pompes : 100 pompes ≈ 1 point de Physique et 0,4 de Discipline
+  for (const r of state.reps) {
+    if (r.date > today) continue;
+    if (r.date < first) first = r.date;
+    const o = byDay.get(r.date) || {};
+    o.physique = (o.physique || 0) + r.n / 100;
+    o.discipline = (o.discipline || 0) + (r.n / 100) * 0.4;
+    byDay.set(r.date, o);
+    goodDays.add(r.date);
   }
   // bonus de régularité : seulement les jours où le bien l'emporte (pas de bonus gratuit)
   for (const [d, o] of byDay) if (goodDays.has(d) && Object.values(o).reduce((a, v) => a + v, 0) >= 0) o.discipline = (o.discipline || 0) + RULES.regularityBonus;
@@ -2188,10 +2203,11 @@ const QUEST_XP = 100, QUEST_PENALTY_XP = 50;
 const isPhysical = l => !l.bad && (l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name)));
 const isFocus = l => !l.bad && (['live', 'clips', 'lecture'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l)));
 function questIndex() {
-  const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0);
+  const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0) + '|' + state.reps.length + ':' + state.reps.reduce((t, r) => t + r.n, 0);
   if (questIndex._k === key) return questIndex._v;
   const byDate = new Map();
-  const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, waste: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
+  const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, waste: 0, pushups: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
+  for (const r of state.reps) get(r.date).pushups += r.n;
   for (const l of state.logs) { const o = get(l.date); if (l.bad) o.waste += l.minutes || 30; else if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30; }
   for (const m of state.meals) get(m.date).meals.add(m.meal);
   for (const b of state.bilans) get(b.date).bilan = true;
@@ -2200,9 +2216,10 @@ function questIndex() {
 }
 function dailyQuest(date) {
   const cfg = state.questCfg;
-  const o = questIndex().get(date) || { phys: 0, focus: 0, waste: 0, meals: new Set(), bilan: false };
+  const o = questIndex().get(date) || { phys: 0, focus: 0, waste: 0, pushups: 0, meals: new Set(), bilan: false };
   const main = ['matin', 'midi', 'soir'].filter(k => o.meals.has(k)).length;
   const goals = [];
+  if (cfg.pushups > 0) goals.push({ key: 'pushups', icon: '💪', label: `${cfg.pushups} pompes`, cur: o.pushups, target: cfg.pushups, unit: '', reps: true });
   if (cfg.sport > 0) goals.push({ key: 'sport', icon: '🏋️', label: 'Entraînement physique', cur: o.phys, target: cfg.sport, unit: 'min' });
   if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
   if (cfg.meals > 0) goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
@@ -2282,7 +2299,8 @@ function renderQuestWindow(today) {
             <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
             <i class="qw-check" aria-hidden="true">${g.max && !g.done ? '✕' : '✓'}</i>
             <em class="qw-prog ${g.max ? 'max' : ''}" style="width:${g.max ? Math.min(100, (g.cur / Math.max(1, g.target)) * 100) : Math.min(100, (g.cur / g.target) * 100)}%"></em>
-          </div>`).join('')}
+          </div>
+          ${g.reps ? `<div class="qw-reps casc" style="--j:${i}">${[5, 10, 20, 25].map(n => `<button type="button" data-reps="${n}">+${n}</button>`).join('')}<button type="button" class="undo" data-reps="undo" aria-label="Annuler la dernière série" ${state.reps.some(r => r.date === today) ? '' : 'disabled'}>↶</button></div>` : ''}`).join('')}
       </div>
       <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE · +${QUEST_XP} XP obtenus` : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
       ${q.done ? '' : `<div class="qw-pen ${warn ? 'on' : ''}">⚠ PÉNALITÉ si non accomplie avant minuit : −${QUEST_PENALTY_XP} XP, Discipline en baisse${warn ? ` · reste ${Math.floor(minsLeft / 60)} h ${pad2(minsLeft % 60)}` : ''}</div>`}
@@ -2802,7 +2820,10 @@ function renderSettings() {
       <div class="panel-head"><div class="panel-title">Quête quotidienne</div></div>
       <p class="small muted" style="margin-top:0">Objectifs du jour. Accomplie = +${QUEST_XP} XP ; ratée à minuit = −${QUEST_PENALTY_XP} XP et Discipline en baisse. Mets 0 pour retirer un objectif.</p>
       <div class="btn-row">
+        <label class="field"><span>Pompes (nombre)</span><input class="input" data-quest="pushups" inputmode="numeric" value="${state.questCfg.pushups}"></label>
         <label class="field"><span>Sport (min)</span><input class="input" data-quest="sport" inputmode="numeric" value="${state.questCfg.sport}"></label>
+      </div>
+      <div class="btn-row">
         <label class="field"><span>Travail concentré (min)</span><input class="input" data-quest="focus" inputmode="numeric" value="${state.questCfg.focus}"></label>
       </div>
       <div class="btn-row">
@@ -3105,6 +3126,35 @@ document.addEventListener('click', e => {
     if (a) openLogSheet(a);
     return;
   }
+  const repBtn = t.closest('#view [data-reps]');
+  if (repBtn && !repBtn.disabled) {
+    const today = todayKey();
+    const qWas = dailyQuest(today);
+    const wasDone = (qWas.goals.find(g => g.key === 'pushups') || {}).done;
+    if (repBtn.dataset.reps === 'undo') {
+      const last = state.reps.filter(r => r.date === today).sort((a, b) => b.ts - a.ts)[0];
+      if (!last) return;
+      tomb(last.id);
+      state.reps = state.reps.filter(r => r.id !== last.id);
+      sfx('tap');
+    } else {
+      state.reps.push({ id: uid(), date: today, ts: Date.now(), n: +repBtn.dataset.reps });
+      sfx('tap'); haptic();
+    }
+    save();
+    const q = dailyQuest(today);
+    const nowDone = (q.goals.find(g => g.key === 'pushups') || {}).done;
+    if (q.done && !qWas.done) { snapshotForAnim(); ui.justDone = ['pushups']; render(); ui.justDone = []; questCompletedCheck(false); return; }
+    // mise à jour de la seule fenêtre de quête (pas de ré-animation de tout l'écran)
+    const wrap = document.createElement('div');
+    ui.justDone = !wasDone && nowDone ? ['pushups'] : [];
+    wrap.innerHTML = renderQuestWindow(today);
+    ui.justDone = [];
+    const nu = wrap.querySelector('.quest-win'), old = $('#view .quest-win');
+    if (nu && old) { nu.classList.add('no-open'); old.replaceWith(nu); }
+    if (!wasDone && nowDone) { sfx('success'); haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes aujourd'hui. Objectif atteint.`); }
+    return;
+  }
   const lb = t.closest('[data-log-bad]');
   if (lb) {
     const a = state.badActivities.find(x => x.id === lb.dataset.logBad);
@@ -3239,7 +3289,7 @@ document.addEventListener('change', e => {
     const k = e.target.dataset.quest;
     if (k === 'bilan') state.questCfg.bilan = e.target.checked;
     else {
-      const max = { sport: 600, focus: 900, meals: 3, waste: 600 }[k];
+      const max = { pushups: 2000, sport: 600, focus: 900, meals: 3, waste: 600 }[k];
       const v = Math.round(parseFloat(e.target.value.replace(',', '.')));
       if (!Number.isFinite(v) || v < 0 || v > max) { toast('Valeur invalide', `Entre 0 et ${max}.`, 'warn'); e.target.value = state.questCfg[k]; return; }
       state.questCfg[k] = v;
@@ -3311,7 +3361,7 @@ function mergeStates(a, b, preferB = false) {
     const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
     const out = JSON.parse(JSON.stringify(newer));
     // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
-    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans']) {
+    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps']) {
       const ids = new Set(out[k].map(x => x.id));
       out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
     }
@@ -3354,6 +3404,7 @@ function mergeStates(a, b, preferB = false) {
     weights: oneByDate(union(a.weights, b.weights)).sort((x, y) => x.date.localeCompare(y.date)),
     journals: oneByDate(union(a.journals, b.journals)),
     bilans: oneByDate(union(a.bilans || [], b.bilans || [])),
+    reps: union(a.reps || [], b.reps || []),
   };
 }
 

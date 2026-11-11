@@ -1261,3 +1261,12 @@ body {
 .qw-goal.over { border-color: rgba(255, 77, 109, .75); background: rgba(255, 77, 109, .1); animation: cascIn .5s both, alarm 1.6s ease-in-out .6s infinite; }
 .qw-goal.over .qw-val { color: #ff9aac; }
 .qw-goal.over .qw-check { color: #fff; background: #c0203f; border-color: #ff4d6d; box-shadow: 0 0 12px #ff4d6d; }
+
+/* ---------- Pompes : compteur dans la quête ---------- */
+.qw-reps { display: grid; grid-template-columns: repeat(4, 1fr) 48px; gap: 6px; margin: -2px 0 4px; }
+.qw-reps button { min-height: 44px; border-radius: 10px; border: 1px solid rgba(140, 220, 255, .45); background: rgba(56, 200, 255, .12);
+  color: #fff; font-family: var(--mono); font-weight: 800; font-size: 15px; box-shadow: 0 0 10px rgba(56, 200, 255, .2); transition: transform .08s; }
+.qw-reps button:active { transform: scale(.92); background: rgba(56, 200, 255, .35); box-shadow: 0 0 18px rgba(56, 200, 255, .7); }
+.qw-reps button.undo { color: var(--text-dim); background: transparent; }
+.qw-reps button:disabled { opacity: .35; }
+.quest-win.no-open .casc:not(.just) { animation: none; }
