@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.5.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -638,7 +638,10 @@ const cf = (key, fallback) => (anim.prev && anim.prev[key] != null ? anim.prev[k
    ========================================================= */
 const TITLES = { home: 'Statut du joueur', today: 'Quêtes du jour', meals: 'Repas & nutrition', stats: 'Statistiques', history: 'Journal des quêtes', settings: 'Réglages' };
 let currentTab = 'home';
-const ui = { calMonth: null, selectedDay: null, holoMode: 'now', holoRank: null, day0: false, statsTab: 'stats', chartKey: 'power', chartTf: 'J', photoPose: 'face', mealDay: null };
+const ui = { calMonth: null, selectedDay: null, holoMode: 'now', holoRank: null, day0: false, statsTab: 'stats', chartKey: 'power', chartTf: 'J', photoPose: 'face', mealDay: null, todayDay: null };
+/* Jour affiché dans « Aujourd'hui » : aujourd'hui, ou un jour passé à compléter (30 jours max) */
+const BACKFILL_DAYS = 30;
+const todayView = () => (ui.todayDay && ui.todayDay < todayKey() && ui.todayDay >= addDays(todayKey(), -BACKFILL_DAYS) ? ui.todayDay : todayKey());
 
 function go(tab) {
   if (tab !== currentTab) { sfx('open'); haptic(); }
@@ -2364,7 +2367,7 @@ function openFoodSheet(meal) {
           if (!ok.length) { toast('Rien à ajouter', 'Touche une case pour choisir chaque aliment.', 'warn'); return; }
           const ml = mealLabel(mealSel);
           const now = Date.now();
-          const qWas = dailyQuest(todayKey()).done;
+          const qWas = dailyQuest(day).done;
           ok.forEach((it, k) => {
             const f = it.cands[it.sel];
             state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
@@ -2376,7 +2379,7 @@ function openFoodSheet(meal) {
           const tt = dayTotals(day), tg = nutritionTargets();
           toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - tt.kcal)} kcal aujourd'hui`);
           sfx('success'); haptic();
-          if (day === todayKey()) setTimeout(() => questCompletedCheck(qWas), 600);
+          if (day >= addDays(todayKey(), -BACKFILL_DAYS)) setTimeout(() => questCompletedCheck(qWas, day), 600);
         }
       });
       sheet.addEventListener('change', e => {
@@ -2770,21 +2773,28 @@ function flyXp(fromRect, xp) {
     setTimeout(() => { orb.remove(); target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash'); sfx('tap'); res(); }, 760);
   });
 }
-function questCompletedCheck(wasDone) {
-  const q = dailyQuest(todayKey());
+function questCompletedCheck(wasDone, date = todayKey()) {
+  const q = dailyQuest(date);
+  if (!wasDone && q.done && date < todayKey()) {
+    if (date < state.startDate) { toast('Quête complète', `${fmtDayShort(date)} : avant le jour 0, elle ne rapporte pas d'XP.`); return Promise.resolve(); }
+    return celebrate({ kind: 'win', icon: '↺', title: '[QUÊTE QUOTIDIENNE] RATTRAPÉE', big: `+${QUEST_XP + QUEST_PENALTY_XP} XP`, count: QUEST_XP + QUEST_PENALTY_XP, sub: `${capFirst(fmtDayLong(date))} : pénalité annulée (+${QUEST_PENALTY_XP}) et récompense obtenue (+${QUEST_XP}).`, chips: q.goals.map(g => g.label) });
+  }
   if (!wasDone && q.done) {
     return celebrate({ kind: 'win', icon: '!', title: '[QUÊTE QUOTIDIENNE] ACCOMPLIE', big: `+${QUEST_XP} XP`, count: QUEST_XP, sub: 'Préparation pour devenir plus fort : terminée.', chips: q.goals.map(g => g.label) });
   }
   return Promise.resolve();
 }
 
-function renderQuestWindow(today) {
-  const q = dailyQuest(today);
+function renderQuestWindow(today, day = today) {
+  const past = day < today;
+  const counts = day >= state.startDate;
+  const q = dailyQuest(day);
   const h = questHistory(today);
   const yest = addDays(today, -1);
   const now = new Date();
   const minsLeft = (24 * 60) - (now.getHours() * 60 + now.getMinutes());
-  const warn = !q.done && now.getHours() >= 20;
+  const warn = !past && !q.done && now.getHours() >= 20;
+  const failedPast = past && !q.done && counts;
   const lv = levelInfo(totalXp());
   return `
     <section class="panel mini-lvl" id="xp-target">
@@ -2792,24 +2802,26 @@ function renderQuestWindow(today) {
       <div class="bar xp energy"><i class="xp-flow" aria-hidden="true"></i><span style="width:${(lv.into / lv.need) * 100}%" ${anim.prev ? `data-w-from="${anim.prev.level < lv.level ? 0 : anim.prev.pct}"` : ''}></span></div>
       <span class="ml-xp">${fmtNum(lv.into)}/${fmtNum(lv.need)}</span>
     </section>
-    ${h.failed.has(yest) ? `<section class="panel penalty-banner"><b>⚠ PÉNALITÉ APPLIQUÉE</b><span>La quête quotidienne d'hier n'a pas été accomplie : −${QUEST_PENALTY_XP} XP et Discipline en baisse.</span></section>` : ''}
-    <section class="panel quest-win ${q.done ? 'done' : ''} ${warn ? 'warn' : ''}">
+
+    ${!past && h.failed.has(yest) ? `<section class="panel penalty-banner"><b>⚠ PÉNALITÉ APPLIQUÉE</b><span>La quête quotidienne d'hier n'a pas été accomplie : −${QUEST_PENALTY_XP} XP et Discipline en baisse.</span><button type="button" class="btn small" style="margin-top:10px" data-today-goto="${yest}">↺ Oubli ? Rattraper hier</button></section>` : ''}
+    <section class="panel quest-win ${q.done ? 'done' : ''} ${warn ? 'warn' : ''} ${failedPast ? 'failed' : ''}">
       <div class="qw-scan" aria-hidden="true"></div>
       <div class="qw-top"><span class="qw-bang">!</span><b class="qw-title">[QUÊTE QUOTIDIENNE]</b></div>
-      <div class="qw-sub">Préparation pour devenir plus fort</div>
+      <div class="qw-sub">${past ? `${esc(capFirst(fmtDayLong(day)))}${q.done ? ' · accomplie' : counts ? ' · à rattraper' : ' · avant le jour 0'}` : 'Préparation pour devenir plus fort'}</div>
       <div class="qw-goals">
         ${q.goals.map((g, i) => `
           <div class="qw-goal casc ${g.done ? 'done' : ''} ${g.max && !g.done ? 'over' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''}" style="--j:${i}">
             <span class="qw-ico">${g.icon}</span>
-            <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}</span>
+            <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}${g.key === 'meals' && !g.done ? `<button type="button" class="qw-link" data-meals-for="${day}">＋ noter les repas ›</button>` : ''}</span>
             <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
             <i class="qw-check" aria-hidden="true">${g.max && !g.done ? '✕' : '✓'}</i>
             <em class="qw-prog ${g.max ? 'max' : ''}" style="width:${g.max ? Math.min(100, (g.cur / Math.max(1, g.target)) * 100) : Math.min(100, (g.cur / g.target) * 100)}%"></em>
           </div>
-          ${g.reps ? `<div class="qw-reps casc" style="--j:${i}">${[5, 10, 20, 25].map(n => `<button type="button" data-reps="${n}">+${n}</button>`).join('')}<button type="button" class="undo" data-reps="undo" aria-label="Annuler la dernière série" ${state.reps.some(r => r.date === today) ? '' : 'disabled'}>↶</button></div>` : ''}`).join('')}
+          ${g.reps ? `<div class="qw-reps casc" style="--j:${i}">${[5, 10, 20, 25].map(n => `<button type="button" data-reps="${n}">+${n}</button>`).join('')}<button type="button" class="undo" data-reps="undo" aria-label="Annuler la dernière série" ${state.reps.some(r => r.date === day) ? '' : 'disabled'}>↶</button></div>` : ''}`).join('')}
       </div>
-      <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE · +${QUEST_XP} XP obtenus` : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
-      ${q.done ? '' : `<div class="qw-pen ${warn ? 'on' : ''}">⚠ PÉNALITÉ si non accomplie avant minuit : −${QUEST_PENALTY_XP} XP, Discipline en baisse${warn ? ` · reste ${Math.floor(minsLeft / 60)} h ${pad2(minsLeft % 60)}` : ''}</div>`}
+      <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE${counts ? ` · +${QUEST_XP} XP obtenus` : ''}` : failedPast ? `✕ QUÊTE RATÉE · −${QUEST_PENALTY_XP} XP` : past ? 'Avant le jour 0 : pas de récompense' : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
+      ${failedPast ? `<div class="qw-fix">↺ Oubli ? Ajoute ce que tu as fait ce jour-là : si la quête est complète, la pénalité est annulée et tu gagnes +${QUEST_XP + QUEST_PENALTY_XP} XP.</div>` : ''}
+      ${q.done || past ? '' : `<div class="qw-pen ${warn ? 'on' : ''}">⚠ PÉNALITÉ si non accomplie avant minuit : −${QUEST_PENALTY_XP} XP, Discipline en baisse${warn ? ` · reste ${Math.floor(minsLeft / 60)} h ${pad2(minsLeft % 60)}` : ''}</div>`}
     </section>`;
 }
 
@@ -2834,7 +2846,10 @@ function entryHtml(l, withDelete = true) {
 
 function renderToday() {
   const today = todayKey();
-  const logs = state.logs.filter(l => l.date === today).sort((a, b) => b.ts - a.ts);
+  const day = todayView();
+  const past = day < today;
+  const minDay = addDays(today, -BACKFILL_DAYS);
+  const logs = state.logs.filter(l => l.date === day).sort((a, b) => b.ts - a.ts);
   const xpDay = logs.reduce((s, l) => s + l.xp, 0);
   const nGood = logs.filter(l => !l.bad).length, nBad = logs.length - nGood;
   const wasted = logs.filter(l => l.bad).reduce((t, l) => t + (l.minutes || 30), 0);
@@ -2856,12 +2871,23 @@ function renderToday() {
       </span>
     </button>`).join('');
 
+  const missed = [];
+  for (let d = addDays(today, -1); d >= minDay && d >= state.startDate && missed.length < 30; d = addDays(d, -1)) if (!dailyQuest(d).done) missed.push(d);
   return `
-    ${renderQuestWindow(today)}
+    <section class="panel day-nav ${past ? 'past' : ''}">
+      <button class="icon-btn" data-today-day="-1" aria-label="Jour précédent" ${day <= minDay ? 'disabled style="opacity:.3"' : ''}>‹</button>
+      <div class="center">
+        <div class="cal-month date-glow">${past ? esc(capFirst(fmtDayLong(day))) : "Aujourd'hui · " + esc(fmtDayShort(today))}</div>
+        <div class="small ${past ? 'dn-past' : 'muted'}">${past ? '↺ MODE RATTRAPAGE' : missed.length ? `⚠ ${missed.length} jour${missed.length > 1 ? 's' : ''} non validé${missed.length > 1 ? 's' : ''} · touche ‹ pour compléter` : 'Touche ‹ pour compléter un jour oublié'}</div>
+      </div>
+      <button class="icon-btn" data-today-day="1" aria-label="Jour suivant" ${past ? '' : 'disabled style="opacity:.3"'}>›</button>
+      ${past ? `<button type="button" class="btn small block dn-back" data-today-day="0">⚔ Revenir à aujourd'hui</button>` : missed.length ? `<div class="dn-missed">${missed.slice(0, 7).map(d => `<button type="button" class="fchip" data-today-goto="${d}">${esc(fmtDayShort(d))}</button>`).join('')}</div>` : ''}
+    </section>
+    ${renderQuestWindow(today, day)}
     <section class="panel">
       <div class="day-summary">
         <div>
-          <div class="date-glow big">${esc(fmtDayLong(today))}</div>
+          <div class="date-glow big">${esc(fmtDayLong(day))}</div>
           <div class="small muted" style="margin-top:4px">${nGood} accomplie${nGood > 1 ? 's' : ''} · <span class="${nBad ? 'trend-down' : ''}">${nBad} mal fait${nBad > 1 ? 's' : ''}${wasted ? ` (${fmtMinutes(wasted)} perdues)` : ''}</span></div>
         </div>
         <div class="day-xp ${xpDay < 0 ? 'neg' : ''}">${xpDay >= 0 ? '+' : '−'}${fmtNum(Math.abs(xpDay))} XP</div>
@@ -2886,8 +2912,8 @@ function renderToday() {
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div class="panel-title">Journal du jour</div></div>
-      ${logs.length ? logs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>Rien aujourd'hui. Choisis ce que tu as accompli ou mal fait au-dessus.</div>`}
+      <div class="panel-head"><div class="panel-title">${past ? 'Journal de ce jour' : 'Journal du jour'}</div></div>
+      ${logs.length ? logs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty"><span class="sys">[SYSTÈME]</span>${past ? 'Rien ce jour-là. Ajoute ce que tu avais fait au-dessus.' : "Rien aujourd'hui. Choisis ce que tu as accompli ou mal fait au-dessus."}</div>`}
     </section>
   `;
 }
@@ -2896,12 +2922,14 @@ function renderToday() {
 function openLogSheet(activity, bad = false) {
   const durations = [15, 30, 45, 60, 90, 120, 180, 240];
   let dayChoice = 'today';
+  const viewDay = todayView();
+  const pastView = viewDay < todayKey();
   const body = `
     <div class="small ${bad ? 'trend-down' : 'muted'}" style="margin:-8px 0 14px">${bad ? '▼ Fait baisser : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') + ' · retire de l’XP' : activity.stats.length ? 'Fait monter : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') : "Ne fait monter aucune stat (modifiable dans Réglages)"}</div>
-    <div class="seg" style="margin-bottom:14px">
+    ${pastView ? `<div class="log-day-fixed">↺ Pour le ${esc(fmtDayLong(viewDay))}</div>` : `<div class="seg" style="margin-bottom:14px">
       <button type="button" class="on" data-day="today">Aujourd'hui</button>
       <button type="button" data-day="yesterday">Hier</button>
-    </div>
+    </div>`}
     <label class="field"><span>${bad ? 'Petite note (facultatif)' : 'Note : le Système la lit et juge la qualité de ta séance'}</span>
       <input class="input" id="log-note" maxlength="280" placeholder="${bad ? 'Ex : scrollé au lit avant de dormir' : 'Ex : séance intense, record au développé couché'}" autocomplete="off">
     </label>
@@ -2943,7 +2971,7 @@ function openLogSheet(activity, bad = false) {
           minutes = parseInt(d.dataset.dur, 10) || null;
         }
         const note = $('#log-note', sheet).value.trim();
-        const date = dayChoice === 'yesterday' ? addDays(todayKey(), -1) : todayKey();
+        const date = pastView ? viewDay : dayChoice === 'yesterday' ? addDays(todayKey(), -1) : todayKey();
         close(null);
         addLog(activity, minutes, note, date, bad);
       });
@@ -2974,7 +3002,7 @@ function addLog(activity, minutes, note, date, bad = false) {
   log.verdict = j.verdict;
   log.xp = Math.max(1, Math.round(log.xp * j.mult));
   ui.lastLogId = log.id;
-  const qBefore = dailyQuest(todayKey());
+  const qBefore = dailyQuest(date);
   snapshotForAnim();
   state.logs.push(log);
   save();
@@ -2985,8 +3013,8 @@ function addLog(activity, minutes, note, date, bad = false) {
     .filter(g => g.d >= 0.01)
     .map(g => `${statByKey[g.k].name} +${g.d.toFixed(2).replace('.', ',')}`);
 
-  const qAfter = dailyQuest(todayKey());
-  ui.justDone = qAfter.goals.filter(g => g.done && !(qBefore.goals.find(x => x.key === g.key) || {}).done).map(g => g.key);
+  const qAfter = dailyQuest(date);
+  ui.justDone = date !== todayView() ? [] : qAfter.goals.filter(g => g.done && !(qBefore.goals.find(x => x.key === g.key) || {}).done).map(g => g.key);
   render();
   ui.justDone = [];
   if (j.mult < 0.95) { sfx('fail'); haptic(2); } else { sfx('success'); haptic(); }
@@ -2999,7 +3027,7 @@ function addLog(activity, minutes, note, date, bad = false) {
     sub: `${log.name}${log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
     chips: gains,
     lines: j.verdict ? ['Jugement du Système : ' + j.verdict] : [],
-  })).then(() => questCompletedCheck(qBefore.done)).then(() => {
+  })).then(() => questCompletedCheck(qBefore.done, date)).then(() => {
     const lvNow = levelInfo(totalXp());
     if (lvNow.level > before.level) {
       const rb = rankFor(before.level), ra = rankFor(lvNow.level);
@@ -3019,14 +3047,14 @@ function addBadLog(activity, minutes, note, date) {
     bad: true, xp: -entryXp(minutes, 'normal'), quality: 1, verdict: '',
   };
   ui.lastLogId = log.id;
-  const qBefore = dailyQuest(today);
+  const qBefore = dailyQuest(date);
   snapshotForAnim();
   state.logs.push(log);
   save();
   const statsAfter = computeStats(state.logs, today).values;
   const losses = STAT_KEYS.map(k => ({ k, d: statsAfter[k] - statsBefore[k] })).filter(g => g.d <= -0.01)
     .map(g => `${statByKey[g.k].name} ${g.d.toFixed(2).replace('.', ',')}`);
-  const qAfter = dailyQuest(today);
+  const qAfter = dailyQuest(date);
   render();
   sfx('penalty'); haptic(2);
   const lostGoal = qBefore.goals.some(g => g.key === 'waste' && g.done) && qAfter.goals.some(g => g.key === 'waste' && !g.done);
@@ -3252,6 +3280,7 @@ function renderHistory() {
         <div class="entry-xp">${fmtNum(selXp)} XP</div>
       </div>
       ${dayVerdictHtml(sel, hst, qh)}
+      ${sel < today && sel >= addDays(today, -BACKFILL_DAYS) ? `<button type="button" class="btn small block" style="margin-bottom:10px" data-today-goto="${sel}">↺ Compléter ce jour (quêtes oubliées)</button>` : ''}
       ${selLogs.length ? selLogs.map((l, i) => entryHtml(l).replace('class="entry ', `style="--j:${i}" class="entry casc `)).join('') : `<div class="empty">Aucune quête ce jour-là.</div>`}
     </section>
 
@@ -3624,7 +3653,7 @@ async function resetAll() {
 document.addEventListener('click', e => {
   const t = e.target;
   const tab = t.closest('.tab');
-  if (tab) return go(tab.dataset.tab);
+  if (tab) { if (tab.dataset.tab === 'today' && currentTab === 'today') ui.todayDay = null; return go(tab.dataset.tab); }
   if (t.closest('#day0-btn')) {
     ui.day0 = !ui.day0;
     ui.holoRank = null;
@@ -3647,7 +3676,7 @@ document.addEventListener('click', e => {
   }
   const repBtn = t.closest('#view [data-reps]');
   if (repBtn && !repBtn.disabled) {
-    const today = todayKey();
+    const today = todayView();
     const qWas = dailyQuest(today);
     const wasDone = (qWas.goals.find(g => g.key === 'pushups') || {}).done;
     if (repBtn.dataset.reps === 'undo') {
@@ -3663,15 +3692,15 @@ document.addEventListener('click', e => {
     save();
     const q = dailyQuest(today);
     const nowDone = (q.goals.find(g => g.key === 'pushups') || {}).done;
-    if (q.done && !qWas.done) { snapshotForAnim(); ui.justDone = ['pushups']; render(); ui.justDone = []; questCompletedCheck(false); return; }
+    if (q.done && !qWas.done) { snapshotForAnim(); ui.justDone = ['pushups']; render(); ui.justDone = []; questCompletedCheck(false, today); return; }
     // mise à jour de la seule fenêtre de quête (pas de ré-animation de tout l'écran)
     const wrap = document.createElement('div');
     ui.justDone = !wasDone && nowDone ? ['pushups'] : [];
-    wrap.innerHTML = renderQuestWindow(today);
+    wrap.innerHTML = renderQuestWindow(todayKey(), today);
     ui.justDone = [];
     const nu = wrap.querySelector('.quest-win'), old = $('#view .quest-win');
     if (nu && old) { nu.classList.add('no-open'); old.replaceWith(nu); }
-    if (!wasDone && nowDone) { sfx('success'); haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes aujourd'hui. Objectif atteint.`); }
+    if (!wasDone && nowDone) { sfx('success'); haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes ${today < todayKey() ? 'le ' + fmtDayShort(today) : "aujourd'hui"}. Objectif atteint.`); }
     return;
   }
   const dcf = t.closest('#view [data-del-cfood]');
@@ -3709,6 +3738,18 @@ document.addEventListener('click', e => {
     return render();
   }
 
+  const tdn = t.closest('#view [data-today-day]');
+  if (tdn && !tdn.disabled) {
+    const step = +tdn.dataset.todayDay;
+    const next = step === 0 ? null : addDays(todayView(), step);
+    ui.todayDay = next && next < todayKey() ? next : null;
+    sfx('tap'); haptic(); render(); window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+  const tdg = t.closest('[data-today-goto]');
+  if (tdg) { ui.todayDay = tdg.dataset.todayGoto; sfx('tap'); haptic(); if (currentTab !== 'today') go('today'); else { render(); window.scrollTo({ top: 0, behavior: 'smooth' }); } return; }
+  const mfor = t.closest('#view [data-meals-for]');
+  if (mfor) { const d = mfor.dataset.mealsFor; ui.mealDay = d < todayKey() ? d : null; return go('meals'); }
   const md = t.closest('#view [data-meal-day]');
   if (md && !md.disabled) { ui.mealDay = addDays(ui.mealDay || todayKey(), +md.dataset.mealDay); if (ui.mealDay >= todayKey()) ui.mealDay = null; return render(); }
   const af = t.closest('#view [data-add-food]');

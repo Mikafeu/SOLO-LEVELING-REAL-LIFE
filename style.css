@@ -1379,3 +1379,19 @@ body {
 .fc-mac .mp b, .ftot .mp { color: #ff9fb3; }
 .fc-mac .mg b, .ftot .mg { color: #7fe0ff; }
 .fc-mac .ml b, .ftot .ml { color: #ffd27a; }
+
+/* ===== v2.5 · Aujourd'hui : revenir sur un jour oublié ===== */
+.day-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.day-nav > .center { flex: 1; min-width: 0; }
+.day-nav .small { margin-top: 2px; }
+.day-nav.past { border-color: rgba(255, 200, 87, .75); box-shadow: 0 0 22px rgba(255, 200, 87, .22); }
+.dn-past { color: #ffd27a; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-shadow: 0 0 8px rgba(255, 200, 80, .5); }
+.dn-back { flex-basis: 100%; margin-top: 6px; }
+.dn-missed { flex-basis: 100%; display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 2px; scrollbar-width: none; }
+.dn-missed::-webkit-scrollbar { display: none; }
+.dn-missed .fchip { min-height: 34px; font-size: 12.5px; border-color: rgba(255, 92, 122, .6); color: #ffc1cc; }
+.quest-win.failed { border-color: rgba(255, 77, 109, .75); box-shadow: 0 0 26px rgba(255, 77, 109, .28); }
+.quest-win.failed .qw-reward { color: #ff7d94; text-shadow: 0 0 10px rgba(255, 77, 109, .7); }
+.qw-fix { margin-top: 10px; padding: 9px 10px; border-radius: 10px; border: 1px solid rgba(255, 200, 87, .6); background: rgba(255, 200, 87, .08); color: #ffe2a6; font-size: 12.5px; line-height: 1.4; text-align: center; }
+.qw-link { display: block; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--neon-2); font-size: 12px; font-weight: 700; text-align: left; }
+.log-day-fixed { margin: -4px 0 14px; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255, 200, 87, .65); background: rgba(255, 200, 87, .08); color: #ffd27a; font-weight: 700; text-align: center; }
