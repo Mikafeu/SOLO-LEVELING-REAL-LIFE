@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -132,6 +132,7 @@ function freshState() {
     bilans: [],       // saisie du jour : ce que j'ai accompli / ce qui m'a fait perdre du temps
     questCfg: { pushups: 100, sport: 30, focus: 60, meals: 3, bilan: true, waste: 60 },
     reps: [],         // pompes (et autres répétitions) : { id, date, ts, n }
+    customFoods: [],  // mes aliments (valeurs d'étiquette) : { id, name, per100:{kcal,p,g,l}, portion, ts, u }
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -239,6 +240,12 @@ function sanitizeState(raw) {
       pushups: inR(q.pushups, 0, 2000) ? q.pushups : 100,
     };
   }
+  const n2 = v => (Number.isFinite(v) && v >= 0 && v <= 1000 ? Math.round(v * 10) / 10 : 0);
+  s.customFoods = (Array.isArray(raw.customFoods) ? raw.customFoods : [])
+    .filter(f => f && typeof f.name === 'string' && f.per100 && typeof f.per100 === 'object')
+    .map(f => ({ id: typeof f.id === 'string' ? f.id : uid(), name: f.name.slice(0, 80), ts: Number.isFinite(f.ts) ? f.ts : 0, u: Number.isFinite(f.u) ? f.u : 0,
+      per100: { kcal: n2(f.per100.kcal), p: n2(f.per100.p), g: n2(f.per100.g), l: n2(f.per100.l) },
+      portion: Number.isFinite(f.portion) && f.portion > 0 && f.portion <= 2000 ? Math.round(f.portion) : null }));
   s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
     .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
     .map(r => ({ id: typeof r.id === 'string' ? r.id : uid(), date: r.date, ts: Number.isFinite(r.ts) ? r.ts : 0, n: Math.round(r.n) }));
@@ -1445,7 +1452,10 @@ function nutritionDays(today) {
 
 /* --- base Ciqual --- */
 let ciqual = null, ciqualLoading = null;
-const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange manger pris'.split(' '));
+const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange mangee manger pris prise bu avale que qui mon ma mes ce cette aussi encore ensuite matin midi soir aujourd hui dose doses scoop scoops mesure mesures'.split(' '));
+/* Marques : reconnues (même mal écrites) pour chercher le produit, retirées pour la base générique */
+const BRAND_FIX = [[/\b(10|dix|in|ine)\s*shape\b/gi, 'InShape'], [/\bmy\s*protein\b/gi, 'MyProtein'], [/\bnutri\s*(and|&|et)\s*co\b/gi, 'Nutri&Co'], [/\bnutri\s*muscle\b/gi, 'Nutrimuscle']];
+const BRANDS = /\b(inshape|myprotein|prozis|nutrimuscle|eafit|bulk|foodspring|nutri&co|nutriandco|optimum|scitec|biotech|olimp|decathlon|domyos|kelloggs?|danone|nestle|lindt|milka|haribo|bonduelle|herta|president|carrefour|auchan|leclerc|lidl|aldi|monoprix|alpro|oikos|siggi'?s?|lu|panzani|barilla|uncle bens?|fleury michon|marque repere|weider|isostar|ovomaltine|nesquik|kinder|ferrero|mcdo|mcdonald'?s?|kfc|burger king|subway|o'?tacos)\b/i;
 const normTxt = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/œ/g, 'oe').replace(/[^a-z0-9]+/g, ' ').trim();
 const stemW = w => (w.length > 3 ? w.replace(/(s|x)$/, '') : w);
 const tokensOf = s => normTxt(s).split(' ').filter(w => w && !STOPW.has(w) && !/^\d+$/.test(w)).map(stemW);
@@ -1512,6 +1522,27 @@ const FOOD_DEFAULTS = {
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
 
+/* Mes aliments (valeurs saisies depuis l'étiquette) : cherchés en premier, avec la marque */
+function searchCustom(query) {
+  const q = tokensOf(query);
+  if (!q.length || !state.customFoods.length) return [];
+  const out = [];
+  for (const f of state.customFoods) {
+    const ft = tokensOf(f.name);
+    let matched = 0;
+    for (const w of q) if (ft.some(t => t === w || t.startsWith(w) || w.startsWith(t))) matched++;
+    const cover = matched / q.length, back = matched / ft.length;
+    if (cover >= 0.6 || back >= 0.8) out.push({ f, score: 300 + cover * 10 + back * 10, cover: Math.max(cover, back) });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+const customFood = f => ({ id: 'u' + f.id, name: f.name, src: 'perso', per100: { ...f.per100 }, portion: f.portion });
+function searchAll(query) {
+  const custom = searchCustom(query).map(x => ({ food: customFood(x.f), cover: x.cover }));
+  const generic = query.replace(new RegExp(BRANDS.source, 'gi'), ' ').replace(/\bnutrition\b/gi, ' ').trim();
+  const base = searchCiqual(generic || query).map(x => ({ food: ciqualFood(x.f), cover: x.cover }));
+  return custom.concat(base);
+}
 function searchCiqual(query, limit = 8) {
   if (!ciqual) return [];
   const q = tokensOf(query);
@@ -1587,7 +1618,7 @@ const PORTIONS = [
   [/\bpain au chocolat|\bchocolatine/, 70], [/\bbiscuit|\bgateau sec/, 10], [/\bcarre/, 5], [/\bcuillere a soupe|\bc a s\b|\bcas\b/, 15],
   [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbol/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
   [/\bsteak|\bburger|\bhamburger/, 125], [/\bavocat/, 150], [/\btomate/, 120], [/\bpart\b.*pizza|\bpizza/, 150], [/\bsandwich/, 250],
-  [/\bportion/, 30], [/\bcafe|\bthe\b/, 200],
+  [/\bportion/, 30], [/\bcafe|\bthe\b/, 200], [/\bdose|\bscoop|\bmesure/, 30],
   [/\bcoca|\bfanta|\bsprite|\bice tea|\bsoda/, 330], [/\bred ?bull/, 250], [/\bmonster/, 500], [/\bwhey|\bproteine|\bshaker/, 30],
   [/\bbig mac/, 219], [/\btacos/, 430], [/\bkebab|\bgrec\b/, 350], [/\bburger|\bcheeseburger/, 120], [/\bnugget/, 17], [/\bcookie/, 30],
   [/\bpain de mie/, 25], [/\bpain\b/, 60], [/\bescalope/, 120], [/\bpizza/, 400], [/\bpaquet de chips|\bchips/, 45],
@@ -1619,10 +1650,15 @@ function splitFoodText(text) {
   }
   return merged.filter(x => /[a-zà-ÿœ]/i.test(x));
 }
+function cleanFoodChunk(c) {
+  let t = c;
+  for (const [re, rep] of BRAND_FIX) t = t.replace(re, rep);
+  return t.replace(/^\s*(et\s+)?(que\s+)?(j['’ ]?ai|jai|on a|je me suis fait)\s+(mang[ée]e?s?|pris|prise|bu|aval[ée]|eu|grignot[ée]|fait)\s+/i, '').trim();
+}
 function parseFoodText(text) {
-  return splitFoodText(text).map(chunk => {
+  return splitFoodText(text).map(cleanFoodChunk).filter(c => /[a-zà-ÿœ]{2,}/i.test(c)).map(chunk => {
     const n = normTxt(chunk);
-    let grams = null, name = chunk, estimated = false;
+    let grams = null, name = chunk, estimated = false, count = 1;
     const m = chunk.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)(?![a-z])`, 'i'));
     if (m) {
       const v = parseFloat(m[1].replace(',', '.'));
@@ -1631,14 +1667,15 @@ function parseFoodText(text) {
       name = chunk.replace(m[0], ' ');
     } else {
       const c = n.match(/^(\d+(?:\.\d+)?)\b/) || n.match(/\b(\d+(?:\.\d+)?)\s*$/);
-      const count = c ? parseFloat(c[1]) : 1;
+      count = c ? parseFloat(c[1]) : 1;
       const sing = n.replace(/([a-z]{3,})s\b/g, '$1');
       const portion = PORTIONS.find(([re]) => re.test(n) || re.test(sing));
       if (portion) { grams = Math.round(count * portion[1]); estimated = true; }
       if (c) name = chunk.replace(new RegExp('(^\\s*' + c[1].replace('.', '[.,]') + '|' + c[1].replace('.', '[.,]') + '\\s*$)'), ' ');
     }
     name = name.replace(/\b(de|du|des)\s*$/i, '').replace(/^\s*(de|du|des|d')\s*/i, '').replace(/\s+/g, ' ').trim();
-    return { text: chunk.trim(), query: name || chunk, grams: grams ? Math.round(grams) : null, estimated };
+    const brand = (name.match(BRANDS) || [null])[0];
+    return { text: chunk.trim(), query: name || chunk, grams: grams ? Math.round(grams) : null, estimated, count, brand };
   });
 }
 
@@ -1749,7 +1786,7 @@ function renderMeals() {
           <div class="entry casc" style="--j:${xi}">
             <div class="entry-body">
               <div class="entry-title">${esc(x.name)}</div>
-              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' ? ' · 🏷️' : ''}</div>
+              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
             </div>
             <div class="entry-xp" style="color:var(--text)">${fmtNum(x.kcal)}</div>
             <button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button>
@@ -1765,19 +1802,41 @@ function renderMeals() {
 
 /* ---------- Ajout d'aliments ---------- */
 function foodRowHtml(it, i) {
-  const opts = it.cands.map((c, j) => `<option value="${j}" ${j === it.sel ? 'selected' : ''}>${c.src === 'off' ? '🏷️ ' : ''}${esc(c.name)} · ${Math.round(c.per100.kcal)} kcal/100 g</option>`).join('');
+  const badge = c => (c.src === 'off' ? '🏷️ ' : c.src === 'perso' ? '⭐ ' : '');
+  const opts = it.cands.map((c, j) => `<option value="${j}" ${j === it.sel ? 'selected' : ''}>${badge(c)}${esc(c.name)} · ${Math.round(c.per100.kcal)} kcal/100 g</option>`).join('');
   const food = it.cands[it.sel];
   const mac = food && it.grams ? macroOf(food, it.grams) : null;
+  const showForm = it.manual || (!it.cands.length && !it.loading);
+  const f = it.form || {};
   return `
-    <div class="food-row" data-row="${i}">
-      <div class="food-q">“${esc(it.text)}”</div>
-      ${it.cands.length ? `<select class="input food-sel" data-sel="${i}">${opts}</select>` : `<div class="small decay-warn">${it.loading ? 'Recherche…' : 'Aucun aliment trouvé.'}</div>`}
+    <div class="food-row ${showForm ? 'unknown' : ''}" data-row="${i}">
+      <div class="food-q">“${esc(it.text)}”${it.brand ? ` <span class="food-brand">${esc(it.brand)}</span>` : ''}</div>
+      ${it.cands.length ? `<select class="input food-sel" data-sel="${i}">${opts}</select>` : `<div class="small decay-warn">${it.loading ? '⟳ Recherche du produit…' : '⚠ Aliment introuvable : entre les valeurs de l’étiquette ci-dessous.'}</div>`}
       <div class="food-line">
         <input class="input food-g ${it.estimated ? 'est' : ''}" data-grams="${i}" inputmode="decimal" placeholder="grammes" value="${it.grams || ''}">
         <span class="food-mac">${mac ? `<b>${mac.kcal} kcal</b> · P ${fmtG(mac.p)} · G ${fmtG(mac.g)} · L ${fmtG(mac.l)}${it.estimated ? '<br><span class="decay-warn">≈ portion estimée, corrige si besoin</span>' : ''}` : '<span class="decay-warn">Indique les grammes</span>'}</span>
       </div>
+      ${showForm ? `
+      <div class="food-form">
+        <div class="ff-title">[SYSTÈME] Valeurs de l'étiquette</div>
+        <label class="field"><span>Nom de l'aliment</span><input class="input" data-ff="name" data-i="${i}" value="${esc(f.name != null ? f.name : it.query)}"></label>
+        <div class="seg ff-per">
+          <button type="button" class="${f.per !== 'portion' ? 'on' : ''}" data-ffper="100" data-i="${i}">Pour 100 g</button>
+          <button type="button" class="${f.per === 'portion' ? 'on' : ''}" data-ffper="portion" data-i="${i}">Par portion / dose</button>
+        </div>
+        ${f.per === 'portion' ? `<label class="field"><span>Une portion = combien de grammes ?</span><input class="input" data-ff="pg" data-i="${i}" inputmode="decimal" placeholder="ex. 30" value="${f.pg || ''}"></label>` : ''}
+        <div class="ff-grid">
+          <label><span>Protéines (g)</span><input class="input" data-ff="p" data-i="${i}" inputmode="decimal" value="${f.p || ''}"></label>
+          <label><span>Glucides (g)</span><input class="input" data-ff="g" data-i="${i}" inputmode="decimal" value="${f.g || ''}"></label>
+          <label><span>Lipides (g)</span><input class="input" data-ff="l" data-i="${i}" inputmode="decimal" value="${f.l || ''}"></label>
+          <label><span>Calories (kcal)</span><input class="input" data-ff="kcal" data-i="${i}" inputmode="decimal" placeholder="auto" value="${f.kcal || ''}"></label>
+        </div>
+        <button type="button" class="btn primary block" data-ffok="${i}">✓ OK — calculer et mémoriser</button>
+        <p class="small faint" style="margin:6px 0 0">Les calories se calculent toutes seules si tu les laisses vides (4 kcal/g de protéines et glucides, 9 kcal/g de lipides). L'aliment est gardé dans « Mes aliments » pour la prochaine fois.</p>
+      </div>` : ''}
       <div class="food-actions">
-        <button type="button" class="btn small ghost" data-off="${i}">🏷️ Chercher la marque</button>
+        <button type="button" class="btn small ghost" data-off="${i}">🏷️ Marque</button>
+        <button type="button" class="btn small ghost" data-manual="${i}">✎ Étiquette</button>
         <button type="button" class="btn small ghost" data-rm="${i}">Retirer</button>
       </div>
     </div>`;
@@ -1792,7 +1851,7 @@ function openFoodSheet(meal) {
     title: `${ml.icon} Qu'as-tu mangé ?`,
     body: `
       <label class="field"><span>Écris tout, avec les grammes. Pour un produit de marque, mets la marque.</span>
-        <textarea class="input" id="food-text" rows="3" placeholder="Ex : 150 g riz, 120 g poulet, 2 oeufs, yaourt Skyr Siggi's 150 g"></textarea>
+        <textarea class="input" id="food-text" rows="3" placeholder="Ex : 150 g riz, 120 g poulet, 2 oeufs, 1 dose de whey InShape"></textarea>
       </label>
       <button type="button" class="btn primary block" data-analyse="1">🔍 Analyser</button>
       <div id="food-rows"></div>
@@ -1800,10 +1859,11 @@ function openFoodSheet(meal) {
         <div class="small muted center" id="food-total"></div>
         <button type="button" class="btn primary block" style="margin-top:8px" data-food-save="1">Ajouter au repas</button>
       </div>
-      <p class="small faint">Valeurs : table Ciqual (ANSES) et Open Food Facts pour les marques (nécessite Internet).</p>`,
+      <p class="small faint">Valeurs : ⭐ mes aliments, table Ciqual (ANSES), 🏷️ Open Food Facts pour les marques (Internet). Introuvable ? « ✎ Étiquette » : entre les valeurs une fois, l'app s'en souvient.</p>`,
     buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
     onMount(sheet, close) {
       const draw = () => {
+        items.forEach((it, i) => { if (sheet.querySelector(`[data-ff][data-i="${i}"]`)) { it.form = it.form || {}; sheet.querySelectorAll(`[data-ff][data-i="${i}"]`).forEach(inp => { it.form[inp.dataset.ff] = inp.value; }); } });
         $('#food-rows', sheet).innerHTML = items.map(foodRowHtml).join('');
         const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
         const missing = items.filter(it => !(it.cands[it.sel] && it.grams > 0));
@@ -1812,17 +1872,32 @@ function openFoodSheet(meal) {
         $('#food-total', sheet).innerHTML = `
           <div class="food-tot"><b>${fmtNum(tot.kcal)} kcal</b><span>Protéines ${fmtG(tot.p)} g</span><span>Glucides ${fmtG(tot.g)} g</span><span>Lipides ${fmtG(tot.l)} g</span></div>
           <div>${ok.length} aliment${ok.length > 1 ? 's' : ''} prêt${ok.length > 1 ? 's' : ''}</div>
-          ${missing.length ? `<div class="decay-warn">⚠ Pas encore ajouté${missing.length > 1 ? 's' : ''} : ${missing.map(it => esc(it.query)).join(', ')} — ${missing.some(it => !it.cands.length) ? 'choisis un aliment (🏷️) ou ' : ''}indique les grammes.</div>` : ''}`;
+          ${missing.length ? `<div class="decay-warn">⚠ Pas encore ajouté${missing.length > 1 ? 's' : ''} : ${missing.map(it => esc(it.query)).join(', ')} — ${missing.some(it => !it.cands.length) ? 'entre les valeurs de l’étiquette ou ' : ''}indique les grammes.</div>` : ''}`;
+      };
+      const readForm = i => {
+        const it = items[i];
+        it.form = it.form || {};
+        sheet.querySelectorAll(`[data-ff][data-i="${i}"]`).forEach(inp => { it.form[inp.dataset.ff] = inp.value; });
       };
       const searchBrand = async (it, auto = false) => {
         if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche de marques demande Internet.', 'warn'); return; }
         it.loading = true; draw();
         try {
-          const res = await searchOFF(it.query);
+          // plusieurs essais : texte complet, puis marque + mot principal, puis sans "nutrition"
+          const core = it.query.replace(new RegExp(BRANDS.source, 'gi'), ' ').replace(/\bnutrition\b/gi, ' ').replace(/\s+/g, ' ').trim();
+          const tries = [...new Set([it.query, it.brand && core ? `${it.brand} ${core}` : null, it.brand && !core ? `${it.brand} whey` : null, it.query.replace(/\bnutrition\b/gi, ' ').replace(/\s+/g, ' ').trim()].filter(Boolean).map(x => x.trim()))];
+          let res = [];
+          for (const q of tries) { res = await searchOFF(q, 8); if (res.length) break; }
+          if (it.brand && res.length) {
+            const b = normJ(it.brand).trim();
+            res.sort((x, y) => (normJ(y.name).includes(b) ? 1 : 0) - (normJ(x.name).includes(b) ? 1 : 0));
+          }
           if (res.length) {
             const local = it.cands.filter(c => c.src !== 'off');
-            // la base officielle reste en tête si elle a bien reconnu l'aliment
-            if (auto && local.length && it.cover >= 0.75) it.cands = [...local, ...res];
+            const perso = local.filter(c => c.src === 'perso');
+            // la base officielle reste en tête si elle a bien reconnu l'aliment (et pas de marque demandée)
+            if (perso.length) it.cands = [...perso, ...res, ...local.filter(c => c.src !== 'perso')];
+            else if (auto && local.length && it.cover >= 0.75 && !it.brand) it.cands = [...local, ...res];
             else { it.cands = [...res, ...local]; it.sel = 0; }
           }
           else if (!auto) toast('Marque introuvable', 'Essaie avec le nom exact du produit.', 'warn');
@@ -1839,18 +1914,56 @@ function openFoodSheet(meal) {
           try { await loadCiqual(); } catch (_) { toast('Base aliments indisponible', 'Réessaie avec Internet.', 'warn'); return; }
           const parsed = parseFoodText(txt);
           const fresh = parsed.map(p => {
-            const r = searchCiqual(p.query);
-            return { ...p, cands: r.map(x => ciqualFood(x.f)), sel: 0, cover: r.length ? r[0].cover : 0 };
+            const r = searchAll(p.query);
+            const it = { ...p, cands: r.map(x => x.food), sel: 0, cover: r.length ? r[0].cover : 0, form: {} };
+            const top = it.cands[0];
+            // mes aliments : la portion mémorisée sert si je n'ai pas donné de grammes
+            if (top && top.src === 'perso' && top.portion && (!it.grams || it.estimated)) { it.grams = Math.round(top.portion * (it.count || 1)); it.estimated = false; }
+            return it;
           });
           items = items.concat(fresh);
           $('#food-text', sheet).value = '';
           draw();
           // produit probablement de marque (mots inconnus de la base) → recherche automatique
-          fresh.filter(it => it.cover < 0.75 || !it.cands.length).forEach(it => searchBrand(it, true));
+          fresh.filter(it => !(it.cands[0] && it.cands[0].src === 'perso') && (it.brand || it.cover < 0.75 || !it.cands.length)).forEach(it => searchBrand(it, true));
           return;
         }
         const off = e.target.closest('[data-off]');
         if (off) { searchBrand(items[+off.dataset.off]); return; }
+        const man = e.target.closest('[data-manual]');
+        if (man) { const it = items[+man.dataset.manual]; it.manual = !it.manual; draw(); return; }
+        const per = e.target.closest('[data-ffper]');
+        if (per) { const it = items[+per.dataset.i]; readForm(+per.dataset.i); it.form.per = per.dataset.ffper; draw(); return; }
+        const okb = e.target.closest('[data-ffok]');
+        if (okb) {
+          const i = +okb.dataset.ffok, it = items[i];
+          readForm(i);
+          const f = it.form, num = v => { const x = parseFloat(String(v || '').replace(',', '.')); return Number.isFinite(x) && x >= 0 ? x : null; };
+          const p = num(f.p) || 0, g = num(f.g) || 0, l = num(f.l) || 0;
+          let kcal = num(f.kcal);
+          if (kcal == null) kcal = 4 * p + 4 * g + 9 * l;
+          if (!kcal && !p) { toast('Valeurs manquantes', 'Entre au moins les protéines ou les calories.', 'warn'); return; }
+          let k = 1, portion = null;
+          if (f.per === 'portion') {
+            portion = num(f.pg);
+            if (!portion) { toast('Portion manquante', 'Indique le poids d’une portion (ex. 30 g pour une dose de whey).', 'warn'); return; }
+            k = 100 / portion;
+          }
+          const name = (f.name || it.query).trim().slice(0, 80) || it.query;
+          const cf = { id: uid(), name, ts: Date.now(), u: Date.now(), portion: portion ? Math.round(portion) : null,
+            per100: { kcal: Math.round(kcal * k * 10) / 10, p: Math.round(p * k * 10) / 10, g: Math.round(g * k * 10) / 10, l: Math.round(l * k * 10) / 10 } };
+          // même nom déjà mémorisé → on le remplace
+          state.customFoods.filter(x => normTxt(x.name) === normTxt(name)).forEach(x => tomb(x.id));
+          state.customFoods = state.customFoods.filter(x => normTxt(x.name) !== normTxt(name)).concat(cf);
+          save();
+          it.cands = [customFood(cf), ...it.cands.filter(c => c.src !== 'perso')];
+          it.sel = 0; it.manual = false;
+          if (!it.grams || it.estimated) { if (portion) { it.grams = Math.round(portion * (it.count || 1)); it.estimated = false; } }
+          draw();
+          sfx('success'); haptic();
+          toast('Aliment mémorisé', `⭐ ${name} · ${Math.round(cf.per100.kcal)} kcal / ${fmtG(cf.per100.p)} g prot. pour 100 g`);
+          return;
+        }
         const rm = e.target.closest('[data-rm]');
         if (rm) { items.splice(+rm.dataset.rm, 1); draw(); return; }
         if (e.target.closest('[data-food-save]')) {
@@ -2870,6 +2983,19 @@ function renderSettings() {
     </section>
 
     <section class="panel">
+      <div class="panel-head"><div class="panel-title">Mes aliments</div><div class="panel-sub">${state.customFoods.length}</div></div>
+      ${state.customFoods.length ? state.customFoods.slice().sort((a, b) => a.name.localeCompare(b.name)).map(f => `
+        <div class="setting-activity">
+          <div class="entry-emoji">⭐</div>
+          <div class="entry-body">
+            <div class="entry-title">${esc(f.name)}</div>
+            <div class="entry-meta">${Math.round(f.per100.kcal)} kcal · P ${fmtG(f.per100.p)} · G ${fmtG(f.per100.g)} · L ${fmtG(f.per100.l)} pour 100 g${f.portion ? ` · portion ${f.portion} g` : ''}</div>
+          </div>
+          <button class="icon-btn danger" data-del-cfood="${esc(f.id)}" aria-label="Supprimer">✕</button>
+        </div>`).join('') : '<p class="small muted" style="margin:0">Aucun pour l\'instant. Quand un aliment est introuvable dans Repas, touche « ✎ Étiquette » et entre ses valeurs : il sera gardé ici.</p>'}
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><div class="panel-title">Ce que je fais mal</div><div class="panel-sub">${state.badActivities.length}</div></div>
       ${state.badActivities.map(a => `
         <div class="setting-activity">
@@ -3155,6 +3281,12 @@ document.addEventListener('click', e => {
     if (!wasDone && nowDone) { sfx('success'); haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes aujourd'hui. Objectif atteint.`); }
     return;
   }
+  const dcf = t.closest('#view [data-del-cfood]');
+  if (dcf) {
+    const f = state.customFoods.find(x => x.id === dcf.dataset.delCfood);
+    if (f) confirmBox('Supprimer cet aliment ?', `⭐ ${esc(f.name)} ne sera plus proposé. Les repas déjà notés ne changent pas.`, 'Supprimer', true).then(ok => { if (ok) { tomb(f.id); state.customFoods = state.customFoods.filter(x => x.id !== f.id); save(); render(); } });
+    return;
+  }
   const lb = t.closest('[data-log-bad]');
   if (lb) {
     const a = state.badActivities.find(x => x.id === lb.dataset.logBad);
@@ -3361,7 +3493,7 @@ function mergeStates(a, b, preferB = false) {
     const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
     const out = JSON.parse(JSON.stringify(newer));
     // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
-    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps']) {
+    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps', 'customFoods']) {
       const ids = new Set(out[k].map(x => x.id));
       out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
     }
@@ -3405,6 +3537,7 @@ function mergeStates(a, b, preferB = false) {
     journals: oneByDate(union(a.journals, b.journals)),
     bilans: oneByDate(union(a.bilans || [], b.bilans || [])),
     reps: union(a.reps || [], b.reps || []),
+    customFoods: union(a.customFoods || [], b.customFoods || []),
   };
 }
 

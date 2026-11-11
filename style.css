@@ -1270,3 +1270,15 @@ body {
 .qw-reps button.undo { color: var(--text-dim); background: transparent; }
 .qw-reps button:disabled { opacity: .35; }
 .quest-win.no-open .casc:not(.just) { animation: none; }
+
+/* ---------- Repas : aliment introuvable → valeurs de l'étiquette ---------- */
+.food-brand { font-style: normal; font-size: 11px; padding: 2px 6px; border-radius: 6px; margin-left: 4px; background: rgba(154, 123, 255, .2); border: 1px solid rgba(154, 123, 255, .5); color: #d9ceff; }
+.food-row.unknown { border-color: rgba(255, 200, 87, .6); box-shadow: 0 0 14px rgba(255, 200, 87, .15); }
+.food-form { margin-top: 10px; padding: 12px; border-radius: 12px; border: 1px solid rgba(255, 200, 87, .45); background: rgba(255, 200, 87, .06); animation: cascIn .4s both; }
+.ff-title { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; color: #ffd27a; margin-bottom: 10px; text-shadow: 0 0 8px rgba(255, 200, 80, .6); }
+.ff-per { margin-bottom: 10px; }
+.ff-per button { min-height: 40px; font-size: 13px; }
+.ff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.ff-grid label span { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.ff-grid .input { min-height: 44px; text-align: center; font-weight: 700; }
+.food-actions .btn { padding: 6px 8px; }
