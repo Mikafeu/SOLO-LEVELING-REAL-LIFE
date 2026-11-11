@@ -8,6 +8,9 @@ monter OU baisser les stats, stats en anneaux, LEVEL UP plein écran.
 scan corporel 3D sculpté (actuel → objectif, aperçu par rang E→S), repas et nutrition
 (Ciqual + Open Food Facts) avec ambiances, graphique façon trading (jour/mois/année),
 bilan mensuel, historique, sauvegarde JSON.
+v2.4 : repas en langage naturel (« un grec frites et un coca »), choix en cases à toucher,
+catalogue des protéines de marque (InShape, MyProtein, Prozis, Nutrimuscle…), aliments
+inconnus classés d'un geste et retenus dans « Mes aliments ».
 
 PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 (Safari → Partager → « Sur l'écran d'accueil ») et utilisable hors connexion.

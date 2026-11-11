@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -245,7 +245,8 @@ function sanitizeState(raw) {
     .filter(f => f && typeof f.name === 'string' && f.per100 && typeof f.per100 === 'object')
     .map(f => ({ id: typeof f.id === 'string' ? f.id : uid(), name: f.name.slice(0, 80), ts: Number.isFinite(f.ts) ? f.ts : 0, u: Number.isFinite(f.u) ? f.u : 0,
       per100: { kcal: n2(f.per100.kcal), p: n2(f.per100.p), g: n2(f.per100.g), l: n2(f.per100.l) },
-      portion: Number.isFinite(f.portion) && f.portion > 0 && f.portion <= 2000 ? Math.round(f.portion) : null }));
+      portion: Number.isFinite(f.portion) && f.portion > 0 && f.portion <= 2000 ? Math.round(f.portion) : null,
+      grp: typeof f.grp === 'string' ? f.grp.slice(0, 40) : undefined, emoji: typeof f.emoji === 'string' ? f.emoji.slice(0, 8) : undefined }));
   s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
     .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
     .map(r => ({ id: typeof r.id === 'string' ? r.id : uid(), date: r.date, ts: Number.isFinite(r.ts) ? r.ts : 0, n: Math.round(r.n) }));
@@ -1452,10 +1453,12 @@ function nutritionDays(today) {
 
 /* --- base Ciqual --- */
 let ciqual = null, ciqualLoading = null;
-const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange mangee manger pris prise bu avale que qui mon ma mes ce cette aussi encore ensuite matin midi soir aujourd hui dose doses scoop scoops mesure mesures'.split(' '));
+const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange mangee manger pris prise bu avale que qui mon ma mes ce cette aussi encore ensuite matin midi soir aujourd hui dose doses scoop scoops mesure mesures peu beaucoup assiette assiettes part parts poignee poignees boite boites sachet sachets paquet paquets gros grosse'.split(' '));
 /* Marques : reconnues (même mal écrites) pour chercher le produit, retirées pour la base générique */
-const BRAND_FIX = [[/\b(10|dix|in|ine)\s*shape\b/gi, 'InShape'], [/\bmy\s*protein\b/gi, 'MyProtein'], [/\bnutri\s*(and|&|et)\s*co\b/gi, 'Nutri&Co'], [/\bnutri\s*muscle\b/gi, 'Nutrimuscle']];
-const BRANDS = /\b(inshape|myprotein|prozis|nutrimuscle|eafit|bulk|foodspring|nutri&co|nutriandco|optimum|scitec|biotech|olimp|decathlon|domyos|kelloggs?|danone|nestle|lindt|milka|haribo|bonduelle|herta|president|carrefour|auchan|leclerc|lidl|aldi|monoprix|alpro|oikos|siggi'?s?|lu|panzani|barilla|uncle bens?|fleury michon|marque repere|weider|isostar|ovomaltine|nesquik|kinder|ferrero|mcdo|mcdonald'?s?|kfc|burger king|subway|o'?tacos)\b/i;
+const BRAND_FIX = [[/\b(10|dix|in|ine|inn)\s*shape\b/gi, 'InShape'], [/\btibo\s+InShape\b/gi, 'InShape'], [/\bmy\s*prot[eé]ine?\b/gi, 'MyProtein'], [/\bnutri\s*(and|&|et|n)\s*co\b/gi, 'Nutri&Co'],
+  [/\bnutri\s*muscle\b/gi, 'Nutrimuscle'], [/\boptimum(\s*nutrition)?\b|\bgold\s*standard\b/gi, 'Optimum'], [/\bapplied(\s*nutrition)?\b/gi, 'Applied'], [/\bbiotech(\s*usa)?\b/gi, 'Biotech'],
+  [/\bdomyos\b/gi, 'Decathlon'], [/\bfood\s*spring\b/gi, 'Foodspring'], [/\be\s*a\s*fit\b/gi, 'Eafit'], [/\bpro\s*zis\b/gi, 'Prozis']];
+const BRANDS = /\b(inshape|myprotein|prozis|nutrimuscle|eafit|bulk|foodspring|nutri&co|nutriandco|optimum|scitec|biotech|olimp|decathlon|domyos|hsn|applied|dymatize|grenade|kelloggs?|danone|nestle|lindt|milka|haribo|bonduelle|herta|president|carrefour|auchan|leclerc|lidl|aldi|monoprix|alpro|oikos|siggi'?s?|lu|panzani|barilla|uncle bens?|fleury michon|marque repere|weider|isostar|ovomaltine|nesquik|kinder|ferrero|mcdo|mcdonald'?s?|kfc|burger king|subway|o'?tacos)\b/i;
 const normTxt = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/œ/g, 'oe').replace(/[^a-z0-9]+/g, ' ').trim();
 const stemW = w => (w.length > 3 ? w.replace(/(s|x)$/, '') : w);
 const tokensOf = s => normTxt(s).split(' ').filter(w => w && !STOPW.has(w) && !/^\d+$/.test(w)).map(stemW);
@@ -1480,13 +1483,15 @@ const EXTRA_FOODS = [
   { c: 'x6', n: 'Big Mac (McDonald\'s)', grp: 'fast food', kcal: 230, p: 11.9, g: 18.7, l: 11.4 },
   { c: 'x7', n: 'French tacos (moyenne, 1 viande, frites, sauce fromagère)', grp: 'fast food', kcal: 245, p: 10.5, g: 24, l: 12 },
   { c: 'x8', n: 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', grp: 'boissons', kcal: 30, p: 0, g: 7.5, l: 0 },
+  { c: 'x9', n: 'Plat cuisiné maison (moyenne)', grp: 'plats composés', kcal: 150, p: 8, g: 15, l: 6 },
+  { c: 'x10', n: 'Skyr / yaourt protéiné nature (type HiPro)', grp: 'produits laitiers frais et assimilés', kcal: 58, p: 10, g: 3.8, l: 0.2 },
 ];
 
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
 const FOOD_DEFAULTS = {
   'riz': 'Riz blanc, cuit, non salé', 'riz blanc': 'Riz blanc, cuit, non salé',
   'pate': 'Pâtes sèches standard, cuites, non salées', 'pates': 'Pâtes sèches standard, cuites, non salées',
-  'oeuf': 'Oeuf, dur', 'oeuf dur': 'Oeuf, dur', 'oeuf au plat': 'Oeuf, au plat, sans matière grasse',
+  'oeuf': 'Oeuf, dur', 'oeuf dur': 'Oeuf, dur', 'oeuf plat': 'Oeuf, au plat, sans matière grasse',
   'banane': 'Banane, pulpe, crue', 'pomme': 'Pomme, pulpe et peau, crue',
   'poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'blanc poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'filet poulet': 'Poulet, filet, sans peau, sauté/poêlé',
   'pain': 'Pain, baguette, courante', 'baguette': 'Pain, baguette, courante',
@@ -1519,8 +1524,193 @@ const FOOD_DEFAULTS = {
   'quinoa': "Quinoa, bouilli/cuit à l'eau, non salé", 'patate douce': 'Patate douce, cuite', 'muesli': 'Muesli (aliment moyen)',
   'confiture': 'Confiture ou Marmelade, tout type de fruits (aliment moyen)', 'lait entier': 'Lait entier, UHT', 'cafe': 'Café, non instantané, non sucré, prêt à boire',
   'the': 'Thé infusé, non sucré', 'pate tartiner': 'Pâte à tartiner chocolat et noisette',
+  'skyr': 'Skyr / yaourt protéiné nature (type HiPro)', 'yaourt proteine': 'Skyr / yaourt protéiné nature (type HiPro)', 'hipro': 'Skyr / yaourt protéiné nature (type HiPro)',
+  'yaourt hipro': 'Skyr / yaourt protéiné nature (type HiPro)', 'fromage': 'Fromage (aliment moyen)', 'fromage rape': 'Emmental ou emmenthal râpé', 'gruyere rape': 'Emmental ou emmenthal râpé',
+  'emmental rape': 'Emmental ou emmenthal râpé', 'salade': 'Salade verte, crue, sans assaisonnement', 'salade verte': 'Salade verte, crue, sans assaisonnement', 'salade tomate': 'Tomate, crue',
+  'puree': 'Pomme de terre, purée (aliment moyen)', 'puree pomme terre': 'Pomme de terre, purée (aliment moyen)',
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
+
+/* --- Protéines en poudre & produits sportifs ---
+   Valeurs pour 100 g relevées sur les étiquettes / sites des marques (≈, selon le parfum).
+   dose = poids d'une dose (g). */
+const PROTEIN_TYPES = {
+  whey:    { e: '💪', label: 'Whey classique', per100: { kcal: 390, p: 76, g: 8, l: 6 }, dose: 30 },
+  isolate: { e: '💎', label: 'Whey isolate', per100: { kcal: 370, p: 88, g: 3, l: 1 }, dose: 25 },
+  clear:   { e: '🧊', label: 'Clear whey', per100: { kcal: 340, p: 80, g: 4, l: 0.5 }, dose: 25 },
+  native:  { e: '🥛', label: 'Whey native', per100: { kcal: 380, p: 80, g: 5, l: 5.5 }, dose: 30 },
+  vegan:   { e: '🌱', label: 'Protéine vegan', per100: { kcal: 375, p: 72, g: 7, l: 7 }, dose: 30 },
+  casein:  { e: '🌙', label: 'Caséine', per100: { kcal: 360, p: 78, g: 6, l: 2 }, dose: 30 },
+  gainer:  { e: '🏋️', label: 'Gainer (prise de masse)', per100: { kcal: 385, p: 20, g: 68, l: 4 }, dose: 100 },
+  bar:     { e: '🍫', label: 'Barre protéinée', per100: { kcal: 370, p: 32, g: 35, l: 13 }, dose: 60 },
+  pancake: { e: '🥞', label: 'Pancakes protéinés', per100: { kcal: 375, p: 39, g: 40, l: 5 }, dose: 50 },
+  spread:  { e: '🥜', label: 'Pâte à tartiner protéinée', per100: { kcal: 520, p: 20, g: 30, l: 36 }, dose: 15 },
+  drink:   { e: '🥤', label: 'Boisson protéinée', per100: { kcal: 38, p: 8, g: 1, l: 0.2 }, dose: 330 },
+};
+/* [type, nom du produit, valeurs pour 100 g (null = moyenne du type), dose] */
+const BRAND_PRODUCTS = {
+  'InShape': [
+    ['whey', 'Whey Protein', { kcal: 393, p: 76, g: 11, l: 5 }, 30],
+    ['clear', 'Clear Whey', { kcal: 333, p: 78, g: 4.3, l: 0.6 }, 25],
+    ['gainer', 'Gainer', null, 100],
+    ['pancake', 'Pancakes protéinés', null, 50],
+    ['drink', 'Clear Whey Drink (canette)', { kcal: 36, p: 8, g: 0.8, l: 0 }, 250],
+    ['spread', 'Pâte à tartiner protéinée', null, 15],
+  ],
+  'MyProtein': [
+    ['whey', 'Impact Whey Protein', { kcal: 400, p: 80, g: 6, l: 7 }, 25],
+    ['isolate', 'Impact Whey Isolate', { kcal: 370, p: 90, g: 2.5, l: 0.5 }, 25],
+    ['clear', 'Clear Whey Isolate', { kcal: 350, p: 80, g: 4, l: 0.2 }, 25],
+    ['vegan', 'Vegan Protein Blend', { kcal: 375, p: 70, g: 9, l: 7 }, 30],
+    ['casein', 'Caséine micellaire', null, 30],
+    ['gainer', 'Weight Gainer', null, 100],
+    ['bar', 'Barre protéinée (Layer bar)', null, 60],
+  ],
+  'Prozis': [
+    ['whey', '100% Real Whey Protein', { kcal: 390, p: 75, g: 9, l: 6 }, 30],
+    ['isolate', 'Whey Isolate', null, 25],
+    ['clear', 'Clear Whey', null, 25],
+    ['vegan', 'Protéine vegan', null, 30],
+    ['gainer', 'Gainer', null, 100],
+    ['bar', 'Barre protéinée', null, 60],
+  ],
+  'Nutrimuscle': [
+    ['native', 'Whey native', { kcal: 378, p: 80, g: 4.6, l: 5 }, 30],
+    ['isolate', 'Whey isolate native', { kcal: 365, p: 88, g: 2, l: 1 }, 25],
+    ['casein', 'Caséine native', null, 30],
+    ['vegan', 'Protéine de pois', null, 30],
+  ],
+  'Eafit': [
+    ['whey', 'Pure Whey', { kcal: 380, p: 72, g: 10, l: 6 }, 30],
+    ['isolate', 'Pure Isolate', null, 25],
+    ['gainer', 'Mass Gainer', null, 100],
+    ['bar', 'Barre protéinée', null, 60],
+  ],
+  'Foodspring': [
+    ['whey', 'Whey Protein', { kcal: 380, p: 77, g: 6, l: 6 }, 30],
+    ['clear', 'Clear Whey', null, 25],
+    ['vegan', 'Vegan Protein', null, 30],
+    ['bar', 'Barre protéinée', null, 60],
+  ],
+  'Optimum': [
+    ['whey', 'Gold Standard 100% Whey', { kcal: 395, p: 79, g: 10, l: 5 }, 30],
+    ['isolate', 'Gold Standard Isolate', null, 30],
+    ['casein', 'Gold Standard Casein', null, 33],
+    ['gainer', 'Serious Mass', { kcal: 375, p: 15, g: 75, l: 2 }, 100],
+  ],
+  'Bulk': [
+    ['whey', 'Pure Whey Protein', { kcal: 400, p: 78, g: 5, l: 7 }, 30],
+    ['isolate', 'Pure Whey Isolate', null, 25],
+    ['clear', 'Clear Whey', null, 25],
+    ['vegan', 'Vegan Protein', null, 30],
+  ],
+  'Nutri&Co': [
+    ['native', 'Whey native', { kcal: 375, p: 80, g: 4, l: 4.5 }, 30],
+    ['vegan', 'Protéine vegan', null, 30],
+  ],
+  'Decathlon': [
+    ['whey', 'Whey Protein (Domyos)', { kcal: 380, p: 74, g: 9, l: 5.5 }, 30],
+    ['isolate', 'Whey Isolate (Domyos)', null, 25],
+    ['bar', 'Barre protéinée', null, 55],
+  ],
+  'Isostar': [['whey', 'Whey Protein', null, 30], ['bar', 'Barre protéinée', null, 55]],
+  'Scitec': [['whey', '100% Whey Protein Professional', { kcal: 390, p: 73, g: 10, l: 6 }, 30], ['isolate', '100% Whey Isolate', null, 25]],
+  'Biotech': [['isolate', 'Iso Whey Zero', { kcal: 370, p: 84, g: 3, l: 2 }, 25], ['whey', '100% Pure Whey', null, 28]],
+  'HSN': [['whey', 'Evowhey', null, 30], ['isolate', 'Evolate (isolate)', null, 30]],
+  'Applied': [['isolate', 'ISO-XP', { kcal: 370, p: 90, g: 1, l: 0.5 }, 25], ['clear', 'Clear Whey', null, 25]],
+  'Dymatize': [['isolate', 'ISO 100', { kcal: 370, p: 86, g: 3, l: 1 }, 30], ['whey', 'Elite 100% Whey', null, 30]],
+  'Olimp': [['whey', 'Whey Protein Complex', null, 30]],
+  'Weider': [['whey', 'Premium Whey', null, 30]],
+  'Grenade': [['bar', 'Barre Carb Killa', { kcal: 370, p: 34, g: 35, l: 13 }, 60]],
+};
+const brandKey = b => (b ? normTxt(b).replace(/ /g, '') : '');
+const BRAND_KEYS = Object.fromEntries(Object.keys(BRAND_PRODUCTS).map(k => [brandKey(k), k]));
+const catalogBrand = b => BRAND_KEYS[brandKey(b)] || null;
+const PTYPE_RE = [
+  ['clear', /\bclear\b/], ['isolate', /\biso(lat|late|lats|lates)?\b/], ['native', /\bnatives?\b/], ['vegan', /\bvegan|\bvegetal|\bproteine de pois/],
+  ['casein', /\bcasein/], ['gainer', /\bgainer|\bprise de masse|\bmass\b/], ['bar', /\bbarres?\b/], ['pancake', /\bpancake/],
+  ['spread', /\btartiner/], ['drink', /\bcanettes?\b|\bdrink\b/], ['whey', /\bwhey\b/],
+];
+const detectPType = n => (PTYPE_RE.find(([, re]) => re.test(n)) || [null])[0];
+const FLAVORS = /\b(vanille|chocolat|choco|fraise|framboise|cookies?|caramel|banane|neutre|nature|peanut|butter|cacahuete|coco|pistache|saveur|gout|parfum|poudre|nutrition|en|au|aux|a|la|le|de|du|des|lait|eau|shakers?)\b/g;
+/* Le texte parle-t-il d'un produit protéiné (whey, isolate…) ? "yaourt protéiné" non, "protéine chocolat" oui */
+function isProteinText(n, brand) {
+  if (catalogBrand(brand)) return true;
+  if (/\b(whey|isolate?|isolat|clear whey|caseine?|gainer|shakers?)\b/.test(n)) return true;
+  if (/\b(proteines?|prot|proteinee?s?)\b/.test(n)) {
+    const rest = n.replace(/\b(proteines?|prot|proteinee?s?|dose|doses|scoop|scoops|mesure|mesures)\b/g, ' ').replace(FLAVORS, ' ').replace(/\d+/g, ' ').trim();
+    return !rest || /^(barres?|pancakes?|pate a tartiner|tartiner)$/.test(rest);
+  }
+  return false;
+}
+function protFood(type, name, per100, dose, brand) {
+  const T = PROTEIN_TYPES[type];
+  return { id: 'p' + brandKey(brand || 'x') + '-' + type + '-' + normTxt(name).replace(/ /g, ''), name: brand ? `${name} — ${brand}` : name,
+    short: name, sub: brand ? `${brand} · dose ${dose} g` : `≈ moyenne · dose ${dose} g`, emoji: T.e, src: brand ? 'marque' : 'type',
+    per100: { ...(per100 || T.per100) }, portion: dose, ptype: type, grp: 'compléments' };
+}
+/* Liste des produits proposés pour un texte protéiné */
+function protCands(query, brand) {
+  const n = normTxt(query);
+  const ptype = detectPType(n);
+  const bk = catalogBrand(brand);
+  let list = bk
+    ? BRAND_PRODUCTS[bk].map(([t, nm, v, d]) => protFood(t, nm, v, d, bk))
+    : Object.keys(PROTEIN_TYPES).map(t => protFood(t, PROTEIN_TYPES[t].label, null, PROTEIN_TYPES[t].dose, null));
+  if (ptype) list.sort((a, b) => (b.ptype === ptype) - (a.ptype === ptype));
+  else if (bk) list.sort((a, b) => (['whey', 'native'].includes(b.ptype)) - (['whey', 'native'].includes(a.ptype)));
+  const confident = !!ptype && list.filter(f => f.ptype === ptype).length === 1 && (!!bk || ptype !== 'bar');
+  return { list, confident, bk, ptype };
+}
+
+/* --- portions par défaut (quand rien n'est précisé) --- */
+const GROUP_PORTION = [
+  [/viandes|poissons|substitus/, 120], [/charcuteries/, 50], [/pâtes, riz|légumineuses|pommes de terre/, 200], [/légumes/, 150], [/^fruits$/, 130],
+  [/produits laitiers frais|desserts|crèmes dessert/, 125], [/fromages/, 30], [/pains/, 60], [/viennoiseries/, 60], [/plats composés|salades composées/, 300],
+  [/pizzas/, 150], [/sandwichs/, 250], [/soupes/, 300], [/boissons sans alcool|boisson alcoolisées|laits|eaux/, 250], [/gâteaux/, 80],
+  [/biscuits sucrés|biscuits apéritifs|barres/, 30], [/céréales de petit/, 40], [/chocolats|confiseries/, 30], [/sauces|condiments|confitures/, 20],
+  [/huiles|beurres|margarines|matières grasses|sucres, miels/, 10], [/fruits à coque/, 30], [/œufs/, 55], [/glaces|desserts glacés|sorbets/, 100],
+  [/compléments/, 30], [/fast food/, 250],
+];
+function defaultPortion(f) {
+  if (f.portion) return f.portion;
+  const grp = f.grp || '';
+  if (/pâtes, riz/.test(grp) && /\bcru/.test(normTxt(f.name))) return 80;
+  const m = GROUP_PORTION.find(([re]) => re.test(grp));
+  return m ? m[1] : 100;
+}
+const EMOJIS = [
+  [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza/, '🍕'],
+  [/burger|big mac|cheeseburger/, '🍔'], [/frite/, '🍟'], [/tacos|kebab|grec|wrap|sandwich/, '🌯'], [/poulet|dinde|volaille|nugget/, '🍗'],
+  [/boeuf|steak|viande|veau|porc|agneau|jambon|saucisse|lardon|bacon/, '🥩'], [/saumon|thon|poisson|cabillaud|crevette|sardine|colin/, '🐟'],
+  [/oeuf/, '🥚'], [/fromage|emmental|gruyere|comte|mozzarella|camembert/, '🧀'], [/yaourt|skyr|fromage blanc|lait|creme/, '🥛'],
+  [/pain|baguette|croissant|brioche|viennois/, '🥖'], [/cereale|muesli|avoine|granola/, '🥣'], [/pomme de terre|patate|puree/, '🥔'],
+  [/banane/, '🍌'], [/pomme/, '🍎'], [/orange|clementine|mandarine/, '🍊'], [/fraise|framboise|fruits rouges/, '🍓'], [/fruit|kiwi|poire|raisin|ananas|mangue/, '🍇'],
+  [/salade|brocoli|haricot vert|courgette|epinard|legume|carotte|tomate|poivron/, '🥦'], [/lentille|pois chiche|haricot/, '🫘'],
+  [/chocolat|nutella|pate a tartiner/, '🍫'], [/gateau|cookie|biscuit|patisserie|tarte/, '🍪'], [/glace|sorbet/, '🍨'], [/bonbon|confiserie/, '🍬'],
+  [/coca|soda|fanta|sprite|ice tea|jus|red bull|monster|boisson/, '🥤'], [/cafe/, '☕'], [/the\b/, '🍵'], [/biere|vin\b|alcool/, '🍺'],
+  [/huile|beurre|margarine/, '🫒'], [/amande|noix|cacahuete|noisette|pistache/, '🥜'], [/sauce|ketchup|mayo/, '🥫'], [/soupe|potage/, '🍲'], [/miel|sucre|confiture/, '🍯'],
+];
+const foodEmoji = f => f.emoji || (EMOJIS.find(([re]) => re.test(normTxt(f.name))) || [null, '🍽️'])[1];
+/* "Riz blanc, cuit, non salé" → court "Riz blanc", détail "cuit, non salé" */
+function splitName(f) {
+  if (f.short) return { short: f.short, sub: f.sub || '' };
+  const i = f.name.indexOf(', ');
+  const short = i > 0 ? f.name.slice(0, i) : f.name;
+  let sub = i > 0 ? f.name.slice(i + 2) : '';
+  if (f.src === 'perso') sub = sub || '⭐ mon aliment';
+  if (f.src === 'off') sub = sub || '🏷️ produit de marque';
+  return { short: short.length > 46 ? short.slice(0, 44) + '…' : short, sub: sub.length > 44 ? sub.slice(0, 42) + '…' : sub };
+}
+/* Aliment inconnu : on choisit en touchant ce qui ressemble le plus */
+const FOOD_CATS = [
+  ['🥩', 'Viande', 'Viande cuite (aliment moyen)'], ['🐟', 'Poisson', 'Poisson cuit (aliment moyen)'], ['🍝', 'Pâtes / riz', 'Pâtes sèches standard, cuites, non salées'],
+  ['🍲', 'Plat maison', 'Plat cuisiné maison (moyenne)'], ['🥔', 'Pommes de terre', 'Pomme de terre, cuite (aliment moyen)'], ['🥦', 'Légumes', 'Légume cuit (aliment moyen)'],
+  ['🍎', 'Fruit', 'Fruit cru (aliment moyen)'], ['🥛', 'Yaourt / laitage', 'Yaourt, lait fermenté ou spécialité laitière, nature'], ['🧀', 'Fromage', 'Fromage (aliment moyen)'],
+  ['🥖', 'Pain', 'Pain (aliment moyen)'], ['🥣', 'Céréales', 'Céréales pour petit déjeuner (aliment moyen)'], ['🍪', 'Gâteau', 'Gâteau (aliment moyen)'],
+  ['🍫', 'Chocolat / sucré', 'Chocolat au lait, tablette'], ['🍔', 'Fast-food', 'Hamburger, provenant de fast food'], ['🍕', 'Pizza', 'Pizza au fromage ou Pizza margherita, préemballée'],
+  ['🥤', 'Boisson sucrée', 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)'], ['🍨', 'Dessert', 'Crème dessert, rayon frais ou appertisée (aliment moyen)'], ['💪', 'Protéine', null],
+];
 
 /* Mes aliments (valeurs saisies depuis l'étiquette) : cherchés en premier, avec la marque */
 function searchCustom(query) {
@@ -1536,11 +1726,11 @@ function searchCustom(query) {
   }
   return out.sort((a, b) => b.score - a.score);
 }
-const customFood = f => ({ id: 'u' + f.id, name: f.name, src: 'perso', per100: { ...f.per100 }, portion: f.portion });
+const customFood = f => ({ id: 'u' + f.id, name: f.name, src: 'perso', per100: { ...f.per100 }, portion: f.portion, grp: f.grp || '', emoji: f.emoji });
 function searchAll(query) {
-  const custom = searchCustom(query).map(x => ({ food: customFood(x.f), cover: x.cover }));
+  const custom = searchCustom(query).map(x => ({ food: customFood(x.f), cover: x.cover, score: x.score }));
   const generic = query.replace(new RegExp(BRANDS.source, 'gi'), ' ').replace(/\bnutrition\b/gi, ' ').trim();
-  const base = searchCiqual(generic || query).map(x => ({ food: ciqualFood(x.f), cover: x.cover }));
+  const base = searchCiqual(generic || query).map(x => ({ food: ciqualFood(x.f), cover: x.cover, score: x.score, def: x.def }));
   return custom.concat(base);
 }
 function searchCiqual(query, limit = 8) {
@@ -1554,6 +1744,7 @@ function searchCiqual(query, limit = 8) {
   const exacts = q.filter(w => w.length > 2).map(w => new RegExp(`(^| )${w}(s|x)?( |$)`));
   const res = [];
   for (const f of ciqual) {
+    if (def && f.n === def) { res.push({ f, score: 1000, cover: 1, def: true }); continue; }
     let score = 0, matched = 0;
     q.forEach((w, i) => {
       let sc = 0;
@@ -1572,12 +1763,12 @@ function searchCiqual(query, limit = 8) {
     if (!wantsRaw && COOKED_GROUPS.test(f.grp || '')) { if (/\bcuit/.test(f._n)) score += 1; if (/\bcru/.test(f._n)) score -= 0.6; }
     if (def && f.n === def) score += 100;
     if (zeroFat && /0% MG/.test(f.n)) score += 120 + (/nature/.test(f._n) ? 10 : 0) - f._t.length * 0.5;
-    res.push({ f, score, cover: matched / q.length });
+    res.push({ f, score, cover: matched / q.length, def: !!def && f.n === def });
   }
   res.sort((a, b) => b.score - a.score);
   return res.slice(0, limit);
 }
-const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 } });
+const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 } });
 
 /* --- Open Food Facts (marques) --- */
 async function getJSON(url, ms = 10000) {
@@ -1616,12 +1807,13 @@ const PORTIONS = [
   [/\boeuf/, 55], [/\bbanane/, 120], [/\bpomme\b/, 150], [/\borange/, 150], [/\bkiwi/, 75], [/\bclementine|\bmandarine/, 60],
   [/\byaourt|\byogourt/, 125], [/\btranche.*jambon|\bjambon/, 40], [/\btranche/, 35], [/\bbaguette/, 250], [/\bcroissant/, 60],
   [/\bpain au chocolat|\bchocolatine/, 70], [/\bbiscuit|\bgateau sec/, 10], [/\bcarre/, 5], [/\bcuillere a soupe|\bc a s\b|\bcas\b/, 15],
-  [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbol/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
+  [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbols?\b/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
   [/\bsteak|\bburger|\bhamburger/, 125], [/\bavocat/, 150], [/\btomate/, 120], [/\bpart\b.*pizza|\bpizza/, 150], [/\bsandwich/, 250],
   [/\bportion/, 30], [/\bcafe|\bthe\b/, 200], [/\bdose|\bscoop|\bmesure/, 30],
   [/\bcoca|\bfanta|\bsprite|\bice tea|\bsoda/, 330], [/\bred ?bull/, 250], [/\bmonster/, 500], [/\bwhey|\bproteine|\bshaker/, 30],
   [/\bbig mac/, 219], [/\btacos/, 430], [/\bkebab|\bgrec\b/, 350], [/\bburger|\bcheeseburger/, 120], [/\bnugget/, 17], [/\bcookie/, 30],
   [/\bpain de mie/, 25], [/\bpain\b/, 60], [/\bescalope/, 120], [/\bpizza/, 400], [/\bpaquet de chips|\bchips/, 45],
+  [/\bassiette/, 300], [/\bpoignee/, 30], [/\bskyr|\bhipro/, 150], [/\brape/, 20], [/\bsalade/, 100], [/\bboite de thon|\bboite thon/, 140], [/\bfrite/, 150],
 ];
 const WORDNUM = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, demi: 0.5, demie: 0.5 };
 const UNIT = '(?:kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)';
@@ -1629,7 +1821,7 @@ const UNIT = '(?:kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)';
    "2 pains 50g viande 70g huile d'olive" ou "viande 50g, dinde 400g" */
 function splitFoodText(text) {
   const t = text.replace(/\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\b(?=\s+[a-zà-ÿœ])/gi, w => String(WORDNUM[w.toLowerCase()]));
-  const parts = t.split(/\n|,|;|\+|\bet\b|\bavec\b|\bpuis\b|\bplus\b/i).map(x => x.trim()).filter(x => x.length > 1);
+  const parts = t.split(/\n|,|;|\.|\+|\bet\b|\bavec\b|\bpuis\b|\bplus\b|\bensuite\b|\bapr[eè]s\b|\baccompagn[ée]e?s?\s+d[e']/i).map(x => x.trim()).filter(x => x.length > 1);
   const out = [];
   const qty = new RegExp(`\\d+(?:[.,]\\d+)?\\s*${UNIT}?(?![a-z%\\d])`, 'gi');
   for (const p of parts) {
@@ -1653,29 +1845,31 @@ function splitFoodText(text) {
 function cleanFoodChunk(c) {
   let t = c;
   for (const [re, rep] of BRAND_FIX) t = t.replace(re, rep);
-  return t.replace(/^\s*(et\s+)?(que\s+)?(j['’ ]?ai|jai|on a|je me suis fait)\s+(mang[ée]e?s?|pris|prise|bu|aval[ée]|eu|grignot[ée]|fait)\s+/i, '').trim();
+  t = t.replace(/\b(ce|cet|au|pour le|le|à|a)?\s*(matin|midi|soir|d[ée]jeuner|d[iî]ner|go[uû]ter|petit[- ]d[ée]j(euner)?)\b\s*,?/gi, ' ').replace(/\s+/g, ' ');
+  return t.replace(/^\s*(et\s+)?(que\s+)?(j['’ ]?ai|jai|on a|je me suis fait|je me suis pris|je me suis enfil[ée])\s+(mang[ée]e?s?|pris|prise|bu|aval[ée]|eu|grignot[ée]|fait|enfil[ée])?\s*/i, '').trim();
 }
 function parseFoodText(text) {
   return splitFoodText(text).map(cleanFoodChunk).filter(c => /[a-zà-ÿœ]{2,}/i.test(c)).map(chunk => {
     const n = normTxt(chunk);
-    let grams = null, name = chunk, estimated = false, count = 1;
+    let grams = null, name = chunk, estimated = false, count = 1, gramsSrc = null;
     const m = chunk.match(new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*(kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)(?![a-z])`, 'i'));
     if (m) {
       const v = parseFloat(m[1].replace(',', '.'));
       const u = m[2].toLowerCase();
       grams = u.startsWith('k') ? v * 1000 : u === 'cl' ? v * 10 : (u === 'l' || u.startsWith('litre')) ? v * 1000 : v;
       name = chunk.replace(m[0], ' ');
+      gramsSrc = 'text';
     } else {
       const c = n.match(/^(\d+(?:\.\d+)?)\b/) || n.match(/\b(\d+(?:\.\d+)?)\s*$/);
       count = c ? parseFloat(c[1]) : 1;
       const sing = n.replace(/([a-z]{3,})s\b/g, '$1');
       const portion = PORTIONS.find(([re]) => re.test(n) || re.test(sing));
-      if (portion) { grams = Math.round(count * portion[1]); estimated = true; }
+      if (portion) { grams = Math.round(count * portion[1]); estimated = true; gramsSrc = 'table'; }
       if (c) name = chunk.replace(new RegExp('(^\\s*' + c[1].replace('.', '[.,]') + '|' + c[1].replace('.', '[.,]') + '\\s*$)'), ' ');
     }
-    name = name.replace(/\b(de|du|des)\s*$/i, '').replace(/^\s*(de|du|des|d')\s*/i, '').replace(/\s+/g, ' ').trim();
+    name = name.replace(/\b(de|du|des)\s*$/i, '').replace(/^\s*(des\b|du\b|de la\b|de\b|d['’])\s*/i, '').replace(/\s+/g, ' ').trim();
     const brand = (name.match(BRANDS) || [null])[0];
-    return { text: chunk.trim(), query: name || chunk, grams: grams ? Math.round(grams) : null, estimated, count, brand };
+    return { text: chunk.trim(), query: name || chunk, grams: grams ? Math.round(grams) : null, estimated, count, brand, gramsSrc, unitless: !m };
   });
 }
 
@@ -1774,6 +1968,10 @@ function renderMeals() {
       ${kcalBar(t, tg)}
     </section>
 
+    <button type="button" class="eat-cta enter" style="--i:1" data-add-food="${day === today ? guessMeal() : 'midi'}">
+      <span class="eat-ico">🍽️</span><span class="eat-txt"><b>Qu'as-tu mangé ?</b><small>Écris comme tu parles · le Système calcule tout</small></span><span class="eat-plus">＋</span>
+    </button>
+
     ${MEALS.map(m => {
       const items = state.meals.filter(x => x.date === day && x.meal === m.key).sort((a, b) => a.ts - b.ts);
       const ph = mealPhotos.filter(p => p.meal === m.key);
@@ -1786,7 +1984,7 @@ function renderMeals() {
           <div class="entry casc" style="--j:${xi}">
             <div class="entry-body">
               <div class="entry-title">${esc(x.name)}</div>
-              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
+              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' || x.src === 'marque' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
             </div>
             <div class="entry-xp" style="color:var(--text)">${fmtNum(x.kcal)}</div>
             <button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button>
@@ -1800,90 +1998,208 @@ function renderMeals() {
   `;
 }
 
-/* ---------- Ajout d'aliments ---------- */
-function foodRowHtml(it, i) {
-  const badge = c => (c.src === 'off' ? '🏷️ ' : c.src === 'perso' ? '⭐ ' : '');
-  const opts = it.cands.map((c, j) => `<option value="${j}" ${j === it.sel ? 'selected' : ''}>${badge(c)}${esc(c.name)} · ${Math.round(c.per100.kcal)} kcal/100 g</option>`).join('');
-  const food = it.cands[it.sel];
-  const mac = food && it.grams ? macroOf(food, it.grams) : null;
-  const showForm = it.manual || (!it.cands.length && !it.loading);
+/* ---------- Ajout d'aliments : on écrit comme on parle, on choisit en touchant ---------- */
+const capFirst = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const guessMeal = () => { const h = new Date().getHours(); return h < 11 ? 'matin' : h < 15 ? 'midi' : h < 18 ? 'collation' : 'soir'; };
+/* Grammes : texte ("150 g") > choix de l'utilisateur > dose du produit > portion habituelle */
+function applyGrams(it) {
+  const f = it.cands[it.sel];
+  if (!f || it.gramsSrc === 'text' || it.gramsSrc === 'user') return;
+  if (f.portion && it.unitless) { it.grams = Math.round(f.portion * (it.count || 1)); it.gramsSrc = 'food'; }
+  else if (it.gramsSrc !== 'table') { it.grams = Math.round(defaultPortion(f) * (it.count || 1)); it.gramsSrc = 'food'; }
+  it.estimated = true;
+}
+/* "grec frites", "steak frites" : inconnu en un seul mot → plusieurs aliments connus */
+function splitCombo(p) {
+  if (p.gramsSrc === 'text' || isProteinText(normTxt(p.query), p.brand) || searchAll(p.query).length) return [p];
+  const tk = tokensOf(p.query);
+  if (tk.length < 2) return [p];
+  const keys = [];
+  for (let i = 0; i < tk.length;) {
+    let L = Math.min(3, tk.length - i);
+    while (L > 0 && !FOOD_DEFAULTS[tk.slice(i, i + L).join(' ')]) L--;
+    if (!L) return [p];
+    keys.push(tk.slice(i, i + L).join(' '));
+    i += L;
+  }
+  return keys.map(k => {
+    const por = PORTIONS.find(([re]) => re.test(k));
+    return { text: p.text, query: k, grams: por ? Math.round(por[1] * (p.count || 1)) : null, estimated: true, count: p.count || 1, brand: null, gramsSrc: por ? 'table' : null, unitless: true };
+  });
+}
+function buildFoodItem(p) {
+  const it = { ...p, cands: [], sel: -1, open: false, form: {}, kind: 'food', cover: 0 };
+  const n = normTxt(p.query);
+  const perso = searchCustom(p.query).filter(x => x.cover >= 0.8).map(x => customFood(x.f));
+  if (isProteinText(n, p.brand)) {
+    const pc = protCands(p.query, p.brand);
+    Object.assign(it, { kind: 'prot', bk: pc.bk, cands: perso.concat(pc.list), sel: 0, open: !perso.length && !pc.confident, cover: 1 });
+  } else {
+    const r = searchAll(p.query);
+    it.cands = r.map(x => x.food).slice(0, 10);
+    if (r.length) {
+      const top = r[0], second = r[1];
+      it.sel = 0;
+      it.cover = top.cover;
+      const sure = top.food.src === 'perso' || top.def || (top.cover >= 0.99 && (!second || second.cover < top.cover || top.score - second.score >= 1.5));
+      it.open = !sure;
+    }
+  }
+  applyGrams(it);
+  return it;
+}
+function recentFoods() {
+  const seen = new Set(), out = [];
+  for (const m of state.meals.slice().sort((a, b) => b.ts - a.ts)) {
+    const k = normTxt(m.name);
+    if (seen.has(k) || !(m.grams > 0)) continue;
+    seen.add(k);
+    const r = 100 / m.grams;
+    out.push({ food: { id: 'r' + k.replace(/ /g, ''), name: m.name, src: m.src || 'ciqual', per100: { kcal: m.kcal * r, p: m.p * r, g: m.g * r, l: m.l * r } }, grams: m.grams });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+function tileHtml(f, i, j, on) {
+  const { short, sub } = splitName(f);
+  const d = f.portion;
+  const m = d ? macroOf(f, d) : null;
+  return `<button type="button" class="ftile ${on ? 'on' : ''} casc" style="--j:${j}" data-pick="${i}:${j}">
+      <span class="ft-emo">${foodEmoji(f)}</span>
+      <span class="ft-name">${esc(short)}</span>
+      ${sub ? `<span class="ft-sub">${esc(sub)}</span>` : ''}
+      <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>par dose de ${d} g</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>pour 100 g</small>`}</span>
+      ${on ? '<span class="ft-check">✓</span>' : ''}
+    </button>`;
+}
+function qtyHtml(it, i, f) {
+  const g = it.grams || 0;
+  let chips;
+  if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} dose${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
+  else {
+    const b = defaultPortion(f), r = b <= 30 ? 5 : 10;
+    chips = [...new Set([0.5, 1, 1.5, 2].map(k => Math.max(r, Math.round((b * k) / r) * r)))].map(v => [v, `${v} g`, '']);
+  }
+  return `
+      <div class="fqty">
+        <button type="button" class="fq-btn" data-step="${i}:-1" aria-label="Moins">−</button>
+        <label class="fq-box ${it.estimated ? 'est' : ''}"><input class="fq-val" data-grams="${i}" inputmode="decimal" value="${g || ''}" placeholder="?"><span>g</span></label>
+        <button type="button" class="fq-btn" data-step="${i}:1" aria-label="Plus">+</button>
+      </div>
+      <div class="fchips">${chips.map(([v, lab, small]) => `<button type="button" class="fchip ${v === g ? 'on' : ''}" data-setg="${i}:${v}">${lab}${small ? `<small>${small}</small>` : ''}</button>`).join('')}</div>`;
+}
+function labelFormHtml(it, i) {
   const f = it.form || {};
   return `
-    <div class="food-row ${showForm ? 'unknown' : ''}" data-row="${i}">
-      <div class="food-q">“${esc(it.text)}”${it.brand ? ` <span class="food-brand">${esc(it.brand)}</span>` : ''}</div>
-      ${it.cands.length ? `<select class="input food-sel" data-sel="${i}">${opts}</select>` : `<div class="small decay-warn">${it.loading ? '⟳ Recherche du produit…' : '⚠ Aliment introuvable : entre les valeurs de l’étiquette ci-dessous.'}</div>`}
-      <div class="food-line">
-        <input class="input food-g ${it.estimated ? 'est' : ''}" data-grams="${i}" inputmode="decimal" placeholder="grammes" value="${it.grams || ''}">
-        <span class="food-mac">${mac ? `<b>${mac.kcal} kcal</b> · P ${fmtG(mac.p)} · G ${fmtG(mac.g)} · L ${fmtG(mac.l)}${it.estimated ? '<br><span class="decay-warn">≈ portion estimée, corrige si besoin</span>' : ''}` : '<span class="decay-warn">Indique les grammes</span>'}</span>
-      </div>
-      ${showForm ? `
       <div class="food-form">
         <div class="ff-title">[SYSTÈME] Valeurs de l'étiquette</div>
-        <label class="field"><span>Nom de l'aliment</span><input class="input" data-ff="name" data-i="${i}" value="${esc(f.name != null ? f.name : it.query)}"></label>
+        <label class="field"><span>Nom</span><input class="input" data-ff="name" data-i="${i}" value="${esc(f.name != null ? f.name : capFirst(it.query))}"></label>
         <div class="seg ff-per">
           <button type="button" class="${f.per !== 'portion' ? 'on' : ''}" data-ffper="100" data-i="${i}">Pour 100 g</button>
-          <button type="button" class="${f.per === 'portion' ? 'on' : ''}" data-ffper="portion" data-i="${i}">Par portion / dose</button>
+          <button type="button" class="${f.per === 'portion' ? 'on' : ''}" data-ffper="portion" data-i="${i}">Par dose / portion</button>
         </div>
-        ${f.per === 'portion' ? `<label class="field"><span>Une portion = combien de grammes ?</span><input class="input" data-ff="pg" data-i="${i}" inputmode="decimal" placeholder="ex. 30" value="${f.pg || ''}"></label>` : ''}
+        ${f.per === 'portion' ? `<label class="field"><span>Une dose = combien de grammes ?</span><input class="input" data-ff="pg" data-i="${i}" inputmode="decimal" placeholder="ex. 30" value="${esc(f.pg || '')}"></label>` : ''}
         <div class="ff-grid">
-          <label><span>Protéines (g)</span><input class="input" data-ff="p" data-i="${i}" inputmode="decimal" value="${f.p || ''}"></label>
-          <label><span>Glucides (g)</span><input class="input" data-ff="g" data-i="${i}" inputmode="decimal" value="${f.g || ''}"></label>
-          <label><span>Lipides (g)</span><input class="input" data-ff="l" data-i="${i}" inputmode="decimal" value="${f.l || ''}"></label>
-          <label><span>Calories (kcal)</span><input class="input" data-ff="kcal" data-i="${i}" inputmode="decimal" placeholder="auto" value="${f.kcal || ''}"></label>
+          <label><span>Protéines (g)</span><input class="input" data-ff="p" data-i="${i}" inputmode="decimal" value="${esc(f.p || '')}"></label>
+          <label><span>Glucides (g)</span><input class="input" data-ff="g" data-i="${i}" inputmode="decimal" value="${esc(f.g || '')}"></label>
+          <label><span>Lipides (g)</span><input class="input" data-ff="l" data-i="${i}" inputmode="decimal" value="${esc(f.l || '')}"></label>
+          <label><span>Calories</span><input class="input" data-ff="kcal" data-i="${i}" inputmode="decimal" placeholder="auto" value="${esc(f.kcal || '')}"></label>
         </div>
-        <button type="button" class="btn primary block" data-ffok="${i}">✓ OK — calculer et mémoriser</button>
-        <p class="small faint" style="margin:6px 0 0">Les calories se calculent toutes seules si tu les laisses vides (4 kcal/g de protéines et glucides, 9 kcal/g de lipides). L'aliment est gardé dans « Mes aliments » pour la prochaine fois.</p>
-      </div>` : ''}
-      <div class="food-actions">
-        <button type="button" class="btn small ghost" data-off="${i}">🏷️ Marque</button>
-        <button type="button" class="btn small ghost" data-manual="${i}">✎ Étiquette</button>
-        <button type="button" class="btn small ghost" data-rm="${i}">Retirer</button>
+        <button type="button" class="btn primary block" data-ffok="${i}">✓ OK — calculer et retenir</button>
+      </div>`;
+}
+function foodCardHtml(it, i) {
+  const f = it.cands[it.sel];
+  const mac = f && it.grams ? macroOf(f, it.grams) : null;
+  const nm = f ? splitName(f) : null;
+  const isProt = it.kind === 'prot';
+  const cats = !it.cands.length || it.showCats;
+  let body = '';
+  if (it.open && it.cands.length) {
+    const ask = isProt ? (it.bk ? `💪 Quelle protéine <b>${esc(it.bk)}</b> ?` : '💪 Quel type de protéine ? <span>(ou touche ta marque)</span>') : '👉 Lequel ? <span>Touche le bon</span>';
+    body += `<div class="fc-ask">${ask}</div>
+      ${isProt ? `<div class="fbrands">${['', ...Object.keys(BRAND_PRODUCTS)].map(b => `<button type="button" class="fchip ${b === (it.bk || '') ? 'on' : ''}" data-brand="${i}:${esc(b)}">${b ? esc(b) : 'Sans marque'}</button>`).join('')}</div>` : ''}
+      <div class="tiles">${it.cands.slice(0, isProt ? 14 : 8).map((c, j) => tileHtml(c, i, j, j === it.sel)).join('')}
+        ${navigator.onLine ? `<button type="button" class="ftile web" data-off="${i}"><span class="ft-emo">${it.loading ? '⟳' : '🔎'}</span><span class="ft-name">${it.loading ? 'Recherche…' : 'Chercher sur Internet'}</span><span class="ft-sub">autres produits de marque</span></button>` : ''}
+        ${!isProt && !it.showCats ? `<button type="button" class="ftile web" data-cats="${i}"><span class="ft-emo">🧩</span><span class="ft-name">Pas dans la liste</span><span class="ft-sub">choisir le type d'aliment</span></button>` : ''}
+      </div>`;
+  }
+  if (cats) {
+    body += `<div class="fc-ask">${it.cands.length ? '🧩 C’est plutôt quel type ?' : `👉 Touche ce qui ressemble le plus${it.loading ? ' <span>(je cherche aussi sur Internet…)</span>' : ''}`}</div>
+      <div class="tiles cats">${FOOD_CATS.map(([e, lab], k) => `<button type="button" class="ctile casc" style="--j:${k}" data-cat="${i}:${k}"><span>${e}</span>${esc(lab)}</button>`).join('')}</div>`;
+  }
+  return `
+    <div class="fcard ${f ? (it.open ? 'choose' : 'ok') : 'unknown'} enter" style="--i:${Math.min(i, 6)}" data-row="${i}">
+      <div class="fc-head">
+        ${f ? `<span class="fc-emo">${foodEmoji(f)}</span>
+        <div class="fc-main"><b>${esc(nm.short)}</b><span>${esc(nm.sub || '')}</span></div>
+        <div class="fc-kcal"><b>${mac ? fmtNum(mac.kcal) : '–'}</b><span>kcal</span></div>`
+        : `<span class="fc-emo">${it.loading ? '⟳' : '❓'}</span>
+        <div class="fc-main"><b>${esc(capFirst(it.query))}</b><span>${it.loading ? 'Je cherche le produit…' : 'Je ne connais pas encore cet aliment'}</span></div>`}
+        <button type="button" class="fc-x" data-rm="${i}" aria-label="Retirer">✕</button>
+      </div>
+      ${it.text && ![normTxt(it.query), normTxt(f ? f.name : ''), normTxt(nm ? nm.short : '')].includes(normTxt(it.text)) ? `<div class="fc-said">« ${esc(it.text)} »</div>` : ''}
+      ${body}
+      ${f ? `${qtyHtml(it, i, f)}
+      <div class="fc-mac">${mac ? `<span class="mp">Prot. <b>${fmtG(mac.p)}</b> g</span><span class="mg">Gluc. <b>${fmtG(mac.g)}</b> g</span><span class="ml">Lip. <b>${fmtG(mac.l)}</b> g</span>` : '<span>Choisis la quantité</span>'}</div>
+      ${it.estimated ? '<div class="fc-est">≈ quantité estimée — ajuste avec − / + si besoin</div>' : ''}` : ''}
+      ${it.manual ? labelFormHtml(it, i) : ''}
+      <div class="fc-actions">
+        ${f && it.cands.length > 1 ? `<button type="button" class="flink" data-open="${i}">${it.open ? '✓ Garder ce choix' : '↻ Changer'}</button>` : ''}
+        <button type="button" class="flink" data-manual="${i}">${it.manual ? '✕ Fermer l’étiquette' : '✎ J’ai l’étiquette'}</button>
       </div>
     </div>`;
 }
 
 function openFoodSheet(meal) {
-  const ml = mealLabel(meal);
+  let mealSel = meal || guessMeal();
   const day = ui.mealDay || todayKey();
   let items = [];
+  const recents = recentFoods();
+  const EX = ['2 oeufs, une tranche de pain et un café', '150 g de riz, du poulet et des haricots verts', '1 dose de whey InShape avec 300 ml de lait', 'un grec frites et un coca', 'une assiette de pâtes bolognaise', '2 doses de clear whey MyProtein'];
   openSheet({
-    tag: `[SYSTÈME] ${ml.label}`,
-    title: `${ml.icon} Qu'as-tu mangé ?`,
+    tag: '[SYSTÈME] Journal alimentaire',
+    cls: 'food-sheet',
     body: `
-      <label class="field"><span>Écris tout, avec les grammes. Pour un produit de marque, mets la marque.</span>
-        <textarea class="input" id="food-text" rows="3" placeholder="Ex : 150 g riz, 120 g poulet, 2 oeufs, 1 dose de whey InShape"></textarea>
-      </label>
-      <button type="button" class="btn primary block" data-analyse="1">🔍 Analyser</button>
-      <div id="food-rows"></div>
-      <div id="food-save" style="display:none;margin-top:12px">
-        <div class="small muted center" id="food-total"></div>
-        <button type="button" class="btn primary block" style="margin-top:8px" data-food-save="1">Ajouter au repas</button>
+      <button type="button" class="fs-close" data-close="1" aria-label="Fermer">✕</button>
+      <div class="fs-title">🍽️ Qu'as-tu mangé ?</div>
+      <div class="fs-meals">${MEALS.map(m => `<button type="button" class="fchip ${m.key === mealSel ? 'on' : ''}" data-meal="${m.key}">${m.icon} ${m.label}</button>`).join('')}</div>
+      <div class="fs-write">
+        <textarea class="fs-text" id="food-text" rows="2" enterkeyhint="send" placeholder="Ex : ${esc(EX[Math.floor(Math.random() * EX.length)])}"></textarea>
+        <button type="button" class="fs-go" data-analyse="1" aria-label="Analyser">⚡</button>
       </div>
-      <p class="small faint">Valeurs : ⭐ mes aliments, table Ciqual (ANSES), 🏷️ Open Food Facts pour les marques (Internet). Introuvable ? « ✎ Étiquette » : entre les valeurs une fois, l'app s'en souvient.</p>`,
-    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+      <div class="fs-hint">Écris comme tu parles, même sans les grammes. 🎤 Tu peux aussi dicter avec le micro du clavier.</div>
+      ${recents.length ? `<div class="fs-sec">⏱ Déjà mangé · touche pour ajouter</div>
+      <div class="fs-recents">${recents.map((r, k) => `<button type="button" class="rchip" data-recent="${k}"><span>${foodEmoji(r.food)}</span><b>${esc(splitName(r.food).short)}</b><small>${fmtNum(r.grams)} g</small></button>`).join('')}</div>` : ''}
+      <div id="food-rows"></div>
+      <div class="fs-foot" id="food-save" style="display:none">
+        <div id="food-total"></div>
+        <button type="button" class="btn primary block fs-add" data-food-save="1"></button>
+      </div>`,
     onMount(sheet, close) {
-      const draw = () => {
-        items.forEach((it, i) => { if (sheet.querySelector(`[data-ff][data-i="${i}"]`)) { it.form = it.form || {}; sheet.querySelectorAll(`[data-ff][data-i="${i}"]`).forEach(inp => { it.form[inp.dataset.ff] = inp.value; }); } });
-        $('#food-rows', sheet).innerHTML = items.map(foodRowHtml).join('');
-        const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
-        const missing = items.filter(it => !(it.cands[it.sel] && it.grams > 0));
-        $('#food-save', sheet).style.display = items.length ? '' : 'none';
-        const tot = ok.reduce((t, it) => { const m = macroOf(it.cands[it.sel], it.grams); t.kcal += m.kcal; t.p += m.p; t.g += m.g; t.l += m.l; return t; }, { kcal: 0, p: 0, g: 0, l: 0 });
-        $('#food-total', sheet).innerHTML = `
-          <div class="food-tot"><b>${fmtNum(tot.kcal)} kcal</b><span>Protéines ${fmtG(tot.p)} g</span><span>Glucides ${fmtG(tot.g)} g</span><span>Lipides ${fmtG(tot.l)} g</span></div>
-          <div>${ok.length} aliment${ok.length > 1 ? 's' : ''} prêt${ok.length > 1 ? 's' : ''}</div>
-          ${missing.length ? `<div class="decay-warn">⚠ Pas encore ajouté${missing.length > 1 ? 's' : ''} : ${missing.map(it => esc(it.query)).join(', ')} — ${missing.some(it => !it.cands.length) ? 'entre les valeurs de l’étiquette ou ' : ''}indique les grammes.</div>` : ''}`;
-      };
       const readForm = i => {
         const it = items[i];
+        if (!it) return;
         it.form = it.form || {};
         sheet.querySelectorAll(`[data-ff][data-i="${i}"]`).forEach(inp => { it.form[inp.dataset.ff] = inp.value; });
       };
+      const draw = () => {
+        items.forEach((it, i) => { if (it.manual) readForm(i); });
+        $('#food-rows', sheet).innerHTML = items.map(foodCardHtml).join('');
+        const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
+        const todo = items.length - ok.length;
+        $('#food-save', sheet).style.display = items.length ? '' : 'none';
+        const tot = ok.reduce((t, it) => { const m = macroOf(it.cands[it.sel], it.grams); t.kcal += m.kcal; t.p += m.p; t.g += m.g; t.l += m.l; return t; }, { kcal: 0, p: 0, g: 0, l: 0 });
+        $('#food-total', sheet).innerHTML = `
+          <div class="ftot"><b>🔥 ${fmtNum(tot.kcal)} kcal</b><span class="mp">P ${fmtG(tot.p)} g</span><span class="mg">G ${fmtG(tot.g)} g</span><span class="ml">L ${fmtG(tot.l)} g</span></div>
+          ${todo ? `<div class="ftodo">❓ ${todo} aliment${todo > 1 ? 's' : ''} à choisir (touche une case)</div>` : ''}`;
+        const ml = mealLabel(mealSel);
+        $('[data-food-save]', sheet).textContent = `✓ Ajouter ${ok.length > 1 ? `les ${ok.length} aliments ` : ''}${mealSel === 'collation' ? 'à la collation' : 'au ' + ml.label.toLowerCase()} ${ml.icon}`;
+      };
       const searchBrand = async (it, auto = false) => {
-        if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche de marques demande Internet.', 'warn'); return; }
+        if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche sur Internet demande une connexion.', 'warn'); return; }
         it.loading = true; draw();
         try {
-          // plusieurs essais : texte complet, puis marque + mot principal, puis sans "nutrition"
           const core = it.query.replace(new RegExp(BRANDS.source, 'gi'), ' ').replace(/\bnutrition\b/gi, ' ').replace(/\s+/g, ' ').trim();
           const tries = [...new Set([it.query, it.brand && core ? `${it.brand} ${core}` : null, it.brand && !core ? `${it.brand} whey` : null, it.query.replace(/\bnutrition\b/gi, ' ').replace(/\s+/g, ' ').trim()].filter(Boolean).map(x => x.trim()))];
           let res = [];
@@ -1893,48 +2209,125 @@ function openFoodSheet(meal) {
             res.sort((x, y) => (normJ(y.name).includes(b) ? 1 : 0) - (normJ(x.name).includes(b) ? 1 : 0));
           }
           if (res.length) {
-            const local = it.cands.filter(c => c.src !== 'off');
-            const perso = local.filter(c => c.src === 'perso');
-            // la base officielle reste en tête si elle a bien reconnu l'aliment (et pas de marque demandée)
-            if (perso.length) it.cands = [...perso, ...res, ...local.filter(c => c.src !== 'perso')];
-            else if (auto && local.length && it.cover >= 0.75 && !it.brand) it.cands = [...local, ...res];
-            else { it.cands = [...res, ...local]; it.sel = 0; }
-          }
-          else if (!auto) toast('Marque introuvable', 'Essaie avec le nom exact du produit.', 'warn');
+            const had = it.cands[it.sel];
+            const perso = it.cands.filter(c => c.src === 'perso');
+            const others = it.cands.filter(c => c.src !== 'perso' && c.src !== 'off');
+            it.cands = [...perso, ...res, ...others];
+            it.sel = perso.length || !had || !auto || it.brand ? 0 : it.cands.indexOf(had);
+            it.open = true;
+            applyGrams(it);
+          } else if (!auto) toast('Rien trouvé sur Internet', 'Touche le type d’aliment le plus proche, ou « J’ai l’étiquette ».', 'warn');
         } catch (e) {
-          if (!auto) toast('Recherche impossible', 'Open Food Facts ne répond pas.', 'warn');
+          if (!auto) toast('Recherche impossible', 'Internet ne répond pas : choisis une case.', 'warn');
         }
         it.loading = false;
         if (sheet.isConnected) draw();
       };
+      const analyse = async () => {
+        const ta = $('#food-text', sheet);
+        const txt = ta.value.trim();
+        if (!txt) { toast('Écris ce que tu as mangé', 'Ex : « 2 oeufs et un café » — ou touche un aliment déjà mangé.', 'warn'); ta.focus(); return; }
+        try { await loadCiqual(); } catch (_) { toast('Base aliments indisponible', 'Réessaie avec Internet.', 'warn'); return; }
+        const fresh = parseFoodText(txt).flatMap(splitCombo).map(buildFoodItem);
+        if (!fresh.length) { toast('Je n’ai rien compris', 'Écris le nom des aliments, ex : « riz, poulet ».', 'warn'); return; }
+        items = items.concat(fresh);
+        ta.value = '';
+        ta.blur();
+        sfx('open'); haptic();
+        draw();
+        // produits de marque ou inconnus : recherche automatique sur Internet
+        fresh.filter(it => !(it.cands[0] && it.cands[0].src === 'perso') && (!it.cands.length || (it.brand && !catalogBrand(it.brand)) || (it.kind === 'food' && it.cover < 0.6))).forEach(it => searchBrand(it, true));
+        const first = $('#food-rows .fcard:nth-last-child(' + fresh.length + ')', sheet);
+        if (first) setTimeout(() => first.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+      };
+      $('#food-text', sheet).addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); analyse(); } });
+      const pair = s => { const [a, b] = s.split(':'); return [+a, b]; };
       sheet.addEventListener('click', async e => {
-        if (e.target.closest('[data-analyse]')) {
-          const txt = $('#food-text', sheet).value.trim();
-          if (!txt) { toast('Rien à analyser', 'Écris ce que tu as mangé.', 'warn'); return; }
-          try { await loadCiqual(); } catch (_) { toast('Base aliments indisponible', 'Réessaie avec Internet.', 'warn'); return; }
-          const parsed = parseFoodText(txt);
-          const fresh = parsed.map(p => {
-            const r = searchAll(p.query);
-            const it = { ...p, cands: r.map(x => x.food), sel: 0, cover: r.length ? r[0].cover : 0, form: {} };
-            const top = it.cands[0];
-            // mes aliments : la portion mémorisée sert si je n'ai pas donné de grammes
-            if (top && top.src === 'perso' && top.portion && (!it.grams || it.estimated)) { it.grams = Math.round(top.portion * (it.count || 1)); it.estimated = false; }
-            return it;
-          });
-          items = items.concat(fresh);
-          $('#food-text', sheet).value = '';
-          draw();
-          // produit probablement de marque (mots inconnus de la base) → recherche automatique
-          fresh.filter(it => !(it.cands[0] && it.cands[0].src === 'perso') && (it.brand || it.cover < 0.75 || !it.cands.length)).forEach(it => searchBrand(it, true));
+        const t = e.target;
+        if (t.closest('[data-close]')) { close(null); return; }
+        const mb = t.closest('[data-meal]');
+        if (mb) { mealSel = mb.dataset.meal; sheet.querySelectorAll('[data-meal]').forEach(b => b.classList.toggle('on', b === mb)); haptic(); if (items.length) draw(); return; }
+        if (t.closest('[data-analyse]')) { analyse(); return; }
+        const rc = t.closest('[data-recent]');
+        if (rc) {
+          const r = recents[+rc.dataset.recent];
+          items.push({ text: '', query: r.food.name, grams: r.grams, gramsSrc: 'user', estimated: false, count: 1, cands: [r.food], sel: 0, open: false, kind: 'food', form: {} });
+          rc.classList.add('added');
+          sfx('tap'); haptic(); draw();
           return;
         }
-        const off = e.target.closest('[data-off]');
+        const pk = t.closest('[data-pick]');
+        if (pk) {
+          const [i, j] = pair(pk.dataset.pick), it = items[i];
+          it.sel = +j; it.open = false; it.showCats = false;
+          applyGrams(it);
+          sfx('tap'); haptic(); draw();
+          return;
+        }
+        const op = t.closest('[data-open]');
+        if (op) { const it = items[+op.dataset.open]; it.open = !it.open; it.showCats = false; haptic(); draw(); return; }
+        const sc = t.closest('[data-cats]');
+        if (sc) { items[+sc.dataset.cats].showCats = true; draw(); return; }
+        const br = t.closest('[data-brand]');
+        if (br) {
+          const [i, b] = pair(br.dataset.brand), it = items[i];
+          const pc = protCands(it.query, b || null);
+          it.brand = b || null; it.bk = pc.bk;
+          it.cands = it.cands.filter(c => c.src === 'perso').concat(pc.list);
+          it.sel = it.cands.findIndex(c => c.src !== 'perso');
+          it.open = true;
+          if (it.gramsSrc === 'food') it.gramsSrc = null;
+          applyGrams(it);
+          haptic(); draw();
+          return;
+        }
+        const ct = t.closest('[data-cat]');
+        if (ct) {
+          const [i, k] = pair(ct.dataset.cat), it = items[i];
+          const [emo, lab, ref] = FOOD_CATS[+k];
+          if (!ref) { // protéine
+            const pc = protCands(it.query, it.brand);
+            Object.assign(it, { kind: 'prot', bk: pc.bk, cands: pc.list, sel: 0, open: true, showCats: false });
+            if (it.gramsSrc === 'food') it.gramsSrc = null;
+            applyGrams(it); haptic(); draw();
+            return;
+          }
+          const cf = ciqual && ciqual.find(x => x.n === ref);
+          if (!cf) return;
+          // retenu dans « Mes aliments » : la prochaine fois, il est reconnu tout de suite
+          const name = capFirst(it.query).slice(0, 80);
+          const mine = { id: uid(), name, ts: Date.now(), u: Date.now(), portion: null, grp: cf.grp || '', emoji: emo, per100: { kcal: cf.kcal || 0, p: cf.p || 0, g: cf.g || 0, l: cf.l || 0 } };
+          state.customFoods.filter(x => normTxt(x.name) === normTxt(name)).forEach(x => tomb(x.id));
+          state.customFoods = state.customFoods.filter(x => normTxt(x.name) !== normTxt(name)).concat(mine);
+          save();
+          const food = { ...customFood(mine), short: name, sub: `≈ ${lab.toLowerCase()} (valeurs moyennes)` };
+          it.cands = [food, ...it.cands.filter(c => c.src !== 'perso')];
+          it.sel = 0; it.open = false; it.showCats = false;
+          if (it.gramsSrc === 'food') it.gramsSrc = null;
+          applyGrams(it);
+          sfx('tap'); haptic(); draw();
+          return;
+        }
+        const st = t.closest('[data-step]');
+        if (st) {
+          const [i, dir] = pair(st.dataset.step), it = items[i], f = it.cands[it.sel];
+          if (!f) return;
+          const b = defaultPortion(f), step = f.portion || (b <= 30 ? 5 : b <= 100 ? 10 : 25);
+          const cur = it.grams || 0;
+          it.grams = Math.max(step, Math.min(5000, Math.round((cur + +dir * step) / step) * step || step));
+          it.gramsSrc = 'user'; it.estimated = false;
+          haptic(); draw();
+          return;
+        }
+        const sg = t.closest('[data-setg]');
+        if (sg) { const [i, v] = pair(sg.dataset.setg), it = items[i]; it.grams = +v; it.gramsSrc = 'user'; it.estimated = false; haptic(); draw(); return; }
+        const off = t.closest('[data-off]');
         if (off) { searchBrand(items[+off.dataset.off]); return; }
-        const man = e.target.closest('[data-manual]');
-        if (man) { const it = items[+man.dataset.manual]; it.manual = !it.manual; draw(); return; }
-        const per = e.target.closest('[data-ffper]');
-        if (per) { const it = items[+per.dataset.i]; readForm(+per.dataset.i); it.form.per = per.dataset.ffper; draw(); return; }
-        const okb = e.target.closest('[data-ffok]');
+        const man = t.closest('[data-manual]');
+        if (man) { const i = +man.dataset.manual, it = items[i]; readForm(i); it.manual = !it.manual; draw(); return; }
+        const per = t.closest('[data-ffper]');
+        if (per) { const i = +per.dataset.i; readForm(i); items[i].form.per = per.dataset.ffper; draw(); return; }
+        const okb = t.closest('[data-ffok]');
         if (okb) {
           const i = +okb.dataset.ffok, it = items[i];
           readForm(i);
@@ -1946,51 +2339,51 @@ function openFoodSheet(meal) {
           let k = 1, portion = null;
           if (f.per === 'portion') {
             portion = num(f.pg);
-            if (!portion) { toast('Portion manquante', 'Indique le poids d’une portion (ex. 30 g pour une dose de whey).', 'warn'); return; }
+            if (!portion) { toast('Dose manquante', 'Indique le poids d’une dose (ex. 30 g pour la whey).', 'warn'); return; }
             k = 100 / portion;
           }
-          const name = (f.name || it.query).trim().slice(0, 80) || it.query;
+          const name = (f.name || capFirst(it.query)).trim().slice(0, 80) || it.query;
           const cf = { id: uid(), name, ts: Date.now(), u: Date.now(), portion: portion ? Math.round(portion) : null,
             per100: { kcal: Math.round(kcal * k * 10) / 10, p: Math.round(p * k * 10) / 10, g: Math.round(g * k * 10) / 10, l: Math.round(l * k * 10) / 10 } };
-          // même nom déjà mémorisé → on le remplace
           state.customFoods.filter(x => normTxt(x.name) === normTxt(name)).forEach(x => tomb(x.id));
           state.customFoods = state.customFoods.filter(x => normTxt(x.name) !== normTxt(name)).concat(cf);
           save();
           it.cands = [customFood(cf), ...it.cands.filter(c => c.src !== 'perso')];
-          it.sel = 0; it.manual = false;
-          if (!it.grams || it.estimated) { if (portion) { it.grams = Math.round(portion * (it.count || 1)); it.estimated = false; } }
+          it.sel = 0; it.manual = false; it.open = false; it.showCats = false;
+          if (portion && it.gramsSrc !== 'text' && it.gramsSrc !== 'user') { it.grams = Math.round(portion * (it.count || 1)); it.gramsSrc = 'food'; it.estimated = false; }
+          else applyGrams(it);
           draw();
           sfx('success'); haptic();
-          toast('Aliment mémorisé', `⭐ ${name} · ${Math.round(cf.per100.kcal)} kcal / ${fmtG(cf.per100.p)} g prot. pour 100 g`);
+          toast('Aliment retenu', `⭐ ${name} · ${Math.round(cf.per100.kcal)} kcal et ${fmtG(cf.per100.p)} g de protéines pour 100 g`);
           return;
         }
-        const rm = e.target.closest('[data-rm]');
-        if (rm) { items.splice(+rm.dataset.rm, 1); draw(); return; }
-        if (e.target.closest('[data-food-save]')) {
+        const rm = t.closest('[data-rm]');
+        if (rm) { items.splice(+rm.dataset.rm, 1); haptic(); draw(); return; }
+        if (t.closest('[data-food-save]')) {
           const ok = items.filter(it => it.cands[it.sel] && it.grams > 0);
-          if (!ok.length) { toast('Rien à ajouter', 'Indique au moins un aliment avec ses grammes.', 'warn'); return; }
+          if (!ok.length) { toast('Rien à ajouter', 'Touche une case pour choisir chaque aliment.', 'warn'); return; }
+          const ml = mealLabel(mealSel);
           const now = Date.now();
           const qWas = dailyQuest(todayKey()).done;
           ok.forEach((it, k) => {
             const f = it.cands[it.sel];
-            state.meals.push({ id: uid(), date: day, meal, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
+            state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
           });
           save();
           close(null);
           render();
           const kc = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
-          const t = dayTotals(day), tg = nutritionTargets();
-          toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - t.kcal)} kcal aujourd'hui`);
+          const tt = dayTotals(day), tg = nutritionTargets();
+          toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - tt.kcal)} kcal aujourd'hui`);
           sfx('success'); haptic();
           if (day === todayKey()) setTimeout(() => questCompletedCheck(qWas), 600);
         }
       });
       sheet.addEventListener('change', e => {
-        const s = e.target.closest('[data-sel]');
-        if (s) { items[+s.dataset.sel].sel = +s.value; draw(); }
         const g = e.target.closest('[data-grams]');
-        if (g) { const v = parseFloat(g.value.replace(',', '.')); const it = items[+g.dataset.grams]; it.grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; it.estimated = false; draw(); }
+        if (g) { const v = parseFloat(g.value.replace(',', '.')); const it = items[+g.dataset.grams]; it.grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; it.gramsSrc = 'user'; it.estimated = false; draw(); }
       });
+      setTimeout(() => { const ta = $('#food-text', sheet); if (ta && !recents.length) ta.focus(); }, 300);
     },
   });
 }
