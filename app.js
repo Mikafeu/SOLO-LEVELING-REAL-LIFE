@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '3.0.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -80,6 +80,10 @@ const DEFAULT_ACTIVITIES = [
   { id: 'lecture', name: 'Apprentissage / lecture', icon: '📚', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
 ];
 
+/* Types de « mal fait » : écrans (durée + heure), malbouffe (ce que j'ai mangé),
+   coucher tard (heures), alcool (verres), temps perdu (durée) */
+const BAD_KINDS = ['screen', 'food', 'sleep', 'alcohol', 'time'];
+
 /* =========================================================
    Dates (toujours en heure locale, format AAAA-MM-JJ)
    ========================================================= */
@@ -125,7 +129,7 @@ function freshState() {
     activities: DEFAULT_ACTIVITIES.map(a => ({ ...a, stats: [...a.stats] })),
     badActivities: DEFAULT_BAD.map(a => ({ ...a, stats: [...a.stats], u: 0 })),
     logs: [],
-    body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: 185, age: 21, sex: 'h', waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null },
+    body: { startWeight: 96.5, goalWeight: 86, goalFat: 14, goalMuscle: 43, goalDate: '2027-06-01', heightCm: 185, age: 21, sex: 'h', waistCm: null, neckCm: null, fatStart: 25, kcalTarget: null, wakeTime: '07:30' },
     weights: [],
     meals: [],
     journals: [],
@@ -133,6 +137,8 @@ function freshState() {
     questCfg: { pushups: 100, sport: 30, focus: 60, meals: 3, bilan: true, waste: 60 },
     reps: [],         // pompes (et autres répétitions) : { id, date, ts, n }
     customFoods: [],  // mes aliments (valeurs d'étiquette) : { id, name, per100:{kcal,p,g,l}, portion, ts, u }
+    customExercises: [], // mes exercices : { id, nom, type, coef, ts, u }
+    customJunk: [],   // mes produits de malbouffe : { id, e, nom, kcal, ts, u }
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -176,6 +182,7 @@ function sanitizeState(raw) {
     s.badActivities = raw.badActivities.filter(a => a && typeof a.name === 'string').map(a => ({
       id: typeof a.id === 'string' && a.id ? a.id : uid(), name: a.name.slice(0, 40),
       icon: typeof a.icon === 'string' && a.icon ? a.icon.slice(0, 8) : '⛔', stats: migrateStats(a.stats), u: Number.isFinite(a.u) ? a.u : 0,
+      kind: BAD_KINDS.includes(a.kind) ? a.kind : undefined,
     }));
   }
   s.logs = raw.logs
@@ -185,7 +192,7 @@ function sanitizeState(raw) {
       date: l.date,
       ts: typeof l.ts === 'number' ? l.ts : parseKey(l.date).getTime(),
       activityId: typeof l.activityId === 'string' ? l.activityId : '',
-      name: typeof l.name === 'string' ? l.name.slice(0, 40) : 'Activité',
+      name: typeof l.name === 'string' ? l.name.slice(0, 60) : 'Activité',
       icon: typeof l.icon === 'string' ? l.icon.slice(0, 8) : '⭐',
       minutes: Number.isFinite(l.minutes) && l.minutes > 0 ? Math.min(Math.round(l.minutes), 24 * 60) : null,
       note: typeof l.note === 'string' ? l.note.slice(0, 280) : '',
@@ -195,6 +202,7 @@ function sanitizeState(raw) {
       xp: Number.isFinite(l.xp) && (l.bad === true ? l.xp <= 0 : l.xp >= 0) ? Math.round(l.xp) : 0,
       quality: Number.isFinite(l.quality) && l.quality >= 0.3 && l.quality <= 2 ? l.quality : 1,
       verdict: typeof l.verdict === 'string' ? l.verdict.slice(0, 160) : '',
+      ...cleanLogDetails(l),
     }));
   const okKg = v => Number.isFinite(v) && v >= 30 && v <= 300;
   const inR = (v, a, b) => Number.isFinite(v) && v >= a && v <= b;
@@ -211,6 +219,7 @@ function sanitizeState(raw) {
     if (inR(rb.neckCm, 25, 70)) s.body.neckCm = rb.neckCm;
     if (inR(rb.fatStart, 5, 60)) s.body.fatStart = rb.fatStart;
     if (inR(rb.kcalTarget, 1000, 6000)) s.body.kcalTarget = rb.kcalTarget;
+    if (typeof rb.wakeTime === 'string' && /^\d{2}:\d{2}$/.test(rb.wakeTime)) s.body.wakeTime = rb.wakeTime;
   }
   s.weights = (Array.isArray(raw.weights) ? raw.weights : [])
     .filter(w => w && isValidKey(w.date) && okKg(w.kg))
@@ -247,6 +256,12 @@ function sanitizeState(raw) {
       per100: { kcal: n2(f.per100.kcal), p: n2(f.per100.p), g: n2(f.per100.g), l: n2(f.per100.l) },
       portion: Number.isFinite(f.portion) && f.portion > 0 && f.portion <= 2000 ? Math.round(f.portion) : null,
       grp: typeof f.grp === 'string' ? f.grp.slice(0, 40) : undefined, emoji: typeof f.emoji === 'string' ? f.emoji.slice(0, 8) : undefined }));
+  s.customExercises = (Array.isArray(raw.customExercises) ? raw.customExercises : [])
+    .filter(x => x && typeof x.nom === 'string' && ['nombre', 'charge', 'duree'].includes(x.type))
+    .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), nom: x.nom.slice(0, 40), type: x.type, coef: inR(x.coef, 0.5, 10) ? x.coef : 1, ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
+  s.customJunk = (Array.isArray(raw.customJunk) ? raw.customJunk : [])
+    .filter(x => x && typeof x.nom === 'string' && inR(x.kcal, 1, 5000))
+    .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), e: typeof x.e === 'string' ? x.e.slice(0, 12) : 'autre', nom: x.nom.slice(0, 50), kcal: Math.round(x.kcal), ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
   s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
     .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
     .map(r => ({ id: typeof r.id === 'string' ? r.id : uid(), date: r.date, ts: Number.isFinite(r.ts) ? r.ts : 0, n: Math.round(r.n) }));
@@ -293,6 +308,7 @@ function entryXp(minutes, difficulty) {
   return Math.max(1, Math.round(base * diffMult(difficulty)));
 }
 function entryPoints(log) {
+  if (Number.isFinite(log.pts)) return log.pts * (log.quality || 1);
   const base = log.minutes ? Math.min(log.minutes, RULES.entryMaxMinutes) / RULES.minutesPerPoint : RULES.donePoints;
   return base * diffMult(log.difficulty) * (log.quality || 1);
 }
@@ -308,9 +324,14 @@ function levelInfo(totalXp) {
   while (rest >= xpToNext(level)) { rest -= xpToNext(level); level++; }
   return { level, into: rest, need: xpToNext(level), total: totalXp };
 }
-function rankFor(level) {
+function rankFor(level, gated = true) {
   let r = RANKS[0];
   for (const x of RANKS) if (level >= x.minLevel) r = x;
+  if (!gated || (r.letter !== 'A' && r.letter !== 'S') || typeof rankGate !== 'function') return r;
+  // A et S : il faut aussi la régularité sur des semaines ET un vrai changement physique
+  const g = rankGate();
+  if (r.letter === 'S' && !g.S.ok) r = RANKS.find(x => x.letter === 'A');
+  if (r.letter === 'A' && !g.A.ok) return { ...RANKS.find(x => x.letter === 'B'), locked: 'A' };
   return r;
 }
 function gradeFor(v) {
@@ -324,7 +345,20 @@ function gradeFor(v) {
 /* Le corps compte aussi : chaque kg perdu vers l'objectif rapporte de l'XP, chaque kg repris en retire. */
 const BODY_XP_PER_KG = 300;
 const bodyXp = () => Math.round((state.body.startWeight - currentWeight()) * BODY_XP_PER_KG * (state.body.goalWeight <= state.body.startWeight ? 1 : -1));
-const totalXp = () => Math.max(0, state.logs.reduce((s, l) => s + l.xp, 0) + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp() + questXp());
+/* XP des activités : le positif est plafonné par jour (règle n° 1), le négatif compte toujours */
+let _logsXp = { k: '', v: 0, byDay: null };
+function logsXp() {
+  const k = state.logs.length + '|' + state.logs.reduce((s, l) => s + l.xp, 0);
+  if (_logsXp.k === k) return _logsXp.v;
+  const pos = new Map(); let neg = 0;
+  for (const l of state.logs) { if (l.xp >= 0) pos.set(l.date, (pos.get(l.date) || 0) + l.xp); else neg += l.xp; }
+  let v = neg;
+  for (const x of pos.values()) v += Math.min(REGLAGES_RANGS.xpMaxParJour, x);
+  _logsXp = { k, v, byDay: pos };
+  return v;
+}
+const dayPosXp = d => { logsXp(); return _logsXp.byDay.get(d) || 0; };
+const totalXp = () => Math.max(0, logsXp() + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp() + questXp());
 
 /* Recalcule les stats en "rejouant" chaque jour depuis la 1re donnée.
    Ainsi, supprimer une entrée corrige tout automatiquement.
@@ -567,10 +601,10 @@ function sfx(kind) {
       levelup: [[392, 0, 0.18, 0.1], [523, 0.12, 0.18, 0.1], [659, 0.24, 0.18, 0.1], [1047, 0.36, 0.5, 0.09]],
       fail: [[220, 0, 0.18, 0.09], [165, 0.14, 0.26, 0.09]],
       penalty: [[140, 0, 0.3, 0.12], [110, 0.25, 0.4, 0.12]],
-    }[kind] || [];
-    for (const [f, at, dur, vol] of notes) {
+    }[kind] || GAME_SOUNDS[kind] || [];
+    for (const [f, at, dur, vol, type] of notes) {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.type = kind === 'penalty' || kind === 'fail' ? 'sawtooth' : 'triangle';
+      o.type = type || (kind === 'penalty' || kind === 'fail' ? 'sawtooth' : 'triangle');
       o.frequency.setValueAtTime(f, t0 + at);
       g.gain.setValueAtTime(0.0001, t0 + at);
       g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.01);
@@ -662,6 +696,8 @@ function render() {
   runCountUps(view);
   anim.prev = null;
   scanSweep();
+  applyTier();
+  setProgTheme();
 }
 
 /* Affiche l'hologramme 3D dans l'Accueil (le module 3D se charge à part) */
@@ -858,8 +894,9 @@ function renderStatsTab() {
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Graphique</div><button type="button" class="btn small" data-landscape="1">⟲ Paysage</button></div>
       ${renderChart(st, today, { maxJ: 45, maxM: 12 })}
-      <p class="small faint" style="margin-bottom:0">Tourne ton téléphone ou touche « Paysage » pour voir le graphique en grand.</p>
-    </section>`;
+      <p class="small faint" style="margin-bottom:0">Glisse le doigt sur le graphique pour voir chaque jour. Tourne ton téléphone ou touche « Paysage » pour le voir en grand.</p>
+    </section>
+    ${rankGateHtml()}`;
 }
 
 /* Vue paysage plein écran (fonctionne même si la rotation de l'écran est bloquée) */
@@ -867,10 +904,10 @@ function landscapeHtml() {
   const today = todayKey();
   const st = computeStats(state.logs, today);
   const vw = window.innerWidth, vh = window.innerHeight;
-  const W = Math.max(vw, vh) - 40, H = Math.min(vw, vh) - 175;
+  const W = Math.max(vw, vh) - 48, H = Math.min(vw, vh) - 165;
   return `
     <div class="ls-head"><span class="sheet-tag">[SYSTÈME] STATISTIQUES</span><button type="button" class="icon-btn" data-landscape-close="1" aria-label="Fermer">✕</button></div>
-    ${renderChart(st, today, { W, H: Math.max(130, H), maxJ: 90, maxM: 24, labels: 12 })}`;
+    ${renderChart(st, today, { W, H: Math.max(140, H), maxJ: 120, minJ: 30, labels: 10, ypad: 0.3, maxBw: 9, PL: 16, PT: 16 })}`;
 }
 function openLandscape() {
   closeLandscape();
@@ -917,72 +954,148 @@ function dailySeries(key, st, today) {
   for (const [d, vals] of st.history) out.push({ d, v: key === 'power' ? powerOf(vals) : vals[key] });
   return out;
 }
-function candlesOf(pts, tf, max) {
-  const groups = new Map();
-  pts.forEach((p, i) => {
-    const k = tf === 'J' ? p.d : tf === 'M' ? p.d.slice(0, 7) : p.d.slice(0, 4);
-    if (!groups.has(k)) groups.set(k, { k, o: i ? pts[i - 1].v : p.v, h: -Infinity, l: Infinity, c: p.v });
-    const g = groups.get(k);
-    g.h = Math.max(g.h, p.v, g.o); g.l = Math.min(g.l, p.v, g.o); g.c = p.v;
-  });
-  const list = [...groups.values()];
-  return list.slice(-(max || (tf === 'J' ? 30 : tf === 'M' ? 12 : 10)));
+/* Vues : Jour (derniers jours), Semaine (7 jours), Mois (jours du mois), Année (mois de l'année).
+   Les cases sans données restent vides (pas de faux zéros). */
+const CHART_TF = [['J', 'Jour'], ['S', 'Semaine'], ['M', 'Mois'], ['A', 'Année']];
+const CHARTS = {};
+let chartSeq = 0;
+function chartSlots(pts, tf, today, max, min) {
+  const idx = new Map(pts.map((p, i) => [p.d, i]));
+  const dayC = d => { if (!idx.has(d)) return null; const i = idx.get(d), v = pts[i].v, o = i ? pts[i - 1].v : v; return { o, c: v, h: Math.max(o, v), l: Math.min(o, v) }; };
+  if (tf === 'S') return Array.from({ length: 7 }, (_, i) => { const d = addDays(today, i - 6); return { k: d, kind: 'd', c: dayC(d) }; });
+  if (tf === 'M') {
+    const ym = today.slice(0, 7), [y, m] = ym.split('-').map(Number), n = new Date(y, m, 0).getDate();
+    return Array.from({ length: n }, (_, i) => { const d = `${ym}-${pad2(i + 1)}`; return { k: d, kind: 'd', c: d <= today ? dayC(d) : null }; });
+  }
+  if (tf === 'A') {
+    const y = today.slice(0, 4);
+    return Array.from({ length: 12 }, (_, i) => {
+      const ym = `${y}-${pad2(i + 1)}`, ps = pts.filter(p => p.d.startsWith(ym));
+      if (!ps.length) return { k: ym, kind: 'm', c: null };
+      const i0 = pts.indexOf(ps[0]), o = i0 ? pts[i0 - 1].v : ps[0].v, vs = ps.map(p => p.v);
+      return { k: ym, kind: 'm', c: { o, c: vs[vs.length - 1], h: Math.max(o, ...vs), l: Math.min(o, ...vs) } };
+    });
+  }
+  // Jour : les derniers jours, avec un minimum de cases pour ne pas être trop « zoomé »
+  const N = Math.max(min || 14, Math.min(max || 30, pts.length));
+  return Array.from({ length: N }, (_, i) => { const d = addDays(today, i - N + 1); return { k: d, kind: 'd', c: dayC(d) }; });
 }
 function renderChart(st, today, opt = {}) {
-  const key = ui.chartKey || 'power', tf = ui.chartTf || 'J';
+  const key = ui.chartKey || 'power';
+  const tf = CHART_TF.some(x => x[0] === ui.chartTf) ? ui.chartTf : 'J';
   const pts = dailySeries(key, st, today);
-  const cs = candlesOf(pts, tf, tf === 'J' ? opt.maxJ : tf === 'M' ? opt.maxM : null);
+  const slots = chartSlots(pts, tf, today, opt.maxJ, opt.minJ);
+  const filled = slots.map((s, i) => [s, i]).filter(([s]) => s.c);
   const inverse = key === 'poids';
   const head = `
     <div class="chart-keys">${CHART_SERIES.map(c => `<button type="button" class="chip small ${c.key === key ? 'on' : ''}" data-chart-key="${c.key}">${c.label}</button>`).join('')}</div>
-    <div class="seg chart-tf">${[['J', 'Jour'], ['M', 'Mois'], ['A', 'Année']].map(([k, l]) => `<button type="button" class="${k === tf ? 'on' : ''}" data-chart-tf="${k}">${l}</button>`).join('')}</div>`;
-  if (cs.length < 2) return head + `<div class="empty"><span class="sys">[SYSTÈME]</span>Pas encore assez de données. Le graphique se remplit jour après jour.</div>`;
-  const W = opt.W || 340, H = opt.H || 190, PL = 6, PR = 44, PT = 10, PB = 22;
-  let lo = Math.min(...cs.map(c => c.l)), hi = Math.max(...cs.map(c => c.h));
+    <div class="seg chart-tf">${CHART_TF.map(([k, l]) => `<button type="button" class="${k === tf ? 'on' : ''}" data-chart-tf="${k}">${l}</button>`).join('')}</div>`;
+  if (!filled.length) return head + `<div class="empty"><span class="sys">[SYSTÈME]</span>Pas encore de données sur cette période. Le graphique se remplit jour après jour.</div>`;
+  const W = opt.W || 340, H = opt.H || 190, PL = opt.PL || 6, PR = 44, PT = opt.PT || 10, PB = 22;
+  let lo = Math.min(...filled.map(([s]) => s.c.l)), hi = Math.max(...filled.map(([s]) => s.c.h));
   if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
-  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
-  const n = cs.length, step = (W - PL - PR) / n, bw = Math.max(3, Math.min(18, step * 0.62));
+  const pad = (hi - lo) * (opt.ypad || 0.1); lo -= pad; hi += pad;
+  const n = slots.length, step = (W - PL - PR) / n, bw = Math.max(2, Math.min(opt.maxBw || 18, step * 0.62));
   const Y = v => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
+  const X = i => PL + step * i + step / 2;
   const fmtV = v => key === 'xp' ? fmtNum(v) : (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
-  const lab = c => tf === 'J' ? String(+c.k.slice(8)) : tf === 'M' ? MONTHS_SHORT[+c.k.slice(5) - 1] : c.k;
+  const lab = s => s.kind === 'm' ? MONTHS_SHORT[+s.k.slice(5) - 1] : tf === 'S' ? DAYS[parseKey(s.k).getDay()].slice(0, 3) + '.' : String(+s.k.slice(8));
   const every = Math.ceil(n / (opt.labels || 6));
-  const body = cs.map((c, i) => {
-    const x = PL + step * i + step / 2;
-    const up = inverse ? c.c <= c.o : c.c >= c.o;
+  const body = slots.map((s, i) => {
+    const x = X(i);
+    const lbl = i % every === 0 || (tf === 'S') ? `<text x="${x}" y="${H - 6}" class="cx ${s.c ? '' : 'none'}">${lab(s)}</text>` : '';
+    if (!s.c) return lbl;
+    const c = s.c, up = inverse ? c.c <= c.o : c.c >= c.o;
     const y1 = Y(Math.max(c.o, c.c)), y2 = Y(Math.min(c.o, c.c));
     return `<g class="cdl ${up ? 'up' : 'down'}" style="animation-delay:${i * 25}ms">
       <line x1="${x}" x2="${x}" y1="${Y(c.h).toFixed(1)}" y2="${Y(c.l).toFixed(1)}"/>
       <rect x="${(x - bw / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1.5, y2 - y1).toFixed(1)}" rx="1.5"/>
-      ${i % every === 0 ? `<text x="${x}" y="${H - 6}" class="cx">${lab(c)}</text>` : ''}
-    </g>`;
+      ${lbl}</g>`;
   }).join('');
-  const linePath = cs.map((c, i) => `${i ? 'L' : 'M'}${(PL + step * i + step / 2).toFixed(1)},${Y(c.c).toFixed(1)}`).join(' ');
-  const last = cs[n - 1], prev = cs[n - 2];
-  const ch = last.c - last.o, chPrev = prev.c - prev.o;
+  // courbe par morceaux continus (rien entre deux trous)
+  const segs = [];
+  let cur = [];
+  slots.forEach((s, i) => { if (s.c) cur.push([X(i), Y(s.c.c)]); else if (cur.length) { segs.push(cur); cur = []; } });
+  if (cur.length) segs.push(cur);
+  const paths = segs.map(sg => sg.map(([x, y], j) => `${j ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
+  const areas = segs.filter(sg => sg.length > 1).map(sg => `${sg.map(([x, y], j) => `${j ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')} L${sg[sg.length - 1][0].toFixed(1)},${H - PB} L${sg[0][0].toFixed(1)},${H - PB} Z`);
+  const [lastS, lastI] = filled[filled.length - 1];
+  const prevS = filled.length > 1 ? filled[filled.length - 2][0] : null;
+  const last = lastS.c, ch = last.c - last.o, chPrev = prevS ? prevS.c.c - prevS.c.o : 0;
   const pctCh = last.o ? (ch / Math.abs(last.o)) * 100 : 0;
   const good = inverse ? ch < 0 : ch > 0;
-  const better = inverse ? ch < chPrev : ch > chPrev;
-  const per = tf === 'J' ? "aujourd'hui" : tf === 'M' ? 'ce mois-ci' : 'cette année';
-  const perPrev = tf === 'J' ? 'hier' : tf === 'M' ? 'le mois dernier' : "l'année dernière";
+  const better = prevS ? (inverse ? ch < chPrev : ch > chPrev) : false;
+  const per = lastS.kind === 'm' ? 'ce mois-ci' : lastS.k === today ? "aujourd'hui" : 'au dernier jour noté';
+  const perPrev = lastS.kind === 'm' ? 'le mois d’avant' : 'le jour d’avant';
   const grid = [0, 0.5, 1].map(f => { const v = lo + (hi - lo) * f; return `<line x1="${PL}" x2="${W - PR}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" class="cg"/><text x="${W - PR + 4}" y="${(Y(v) + 3).toFixed(1)}" class="cy">${fmtV(v)}</text>`; }).join('');
+  const cid = 'ch' + (++chartSeq);
+  CHARTS[cid] = { slots, W, H, PL, PT, PB, step, key, tf, fmtV, hist: st.history, inverse, Y };
+  Object.keys(CHARTS).slice(0, -8).forEach(k => delete CHARTS[k]);
+  const dotR = n > 60 ? 1.4 : n > 40 ? 1.8 : 2.6;
   return head + `
     <div class="chart-sum ${good ? 'good' : Math.abs(ch) < 1e-9 ? '' : 'bad'}">
-      <b>${fmtV(last.c)}</b> <span>${ch >= 0 ? '▲ +' : '▼ '}${fmtV(Math.abs(ch)) === '0,0' && key !== 'xp' ? ch.toFixed(2).replace('.', ',') : (ch >= 0 ? '' : '−') + fmtV(Math.abs(ch))} (${pctCh >= 0 ? '+' : ''}${pctCh.toFixed(1).replace('.', ',')} %) ${per}</span>
+      <b>${fmtV(last.c)}</b> <span>${ch >= 0 ? '▲ +' : '▼ '}${fmtV(Math.abs(ch)) === '0,0' && key !== 'xp' ? Math.abs(ch).toFixed(2).replace('.', ',') : fmtV(Math.abs(ch))} (${pctCh >= 0 ? '+' : ''}${pctCh.toFixed(1).replace('.', ',')} %) ${per}</span>
     </div>
-    <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Graphique">
-      <defs>
-        <linearGradient id="clg-${key}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#9a7bff"/><stop offset="1" stop-color="#38e0ff"/></linearGradient>
-        <linearGradient id="cla-${key}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#7a6bff" stop-opacity=".35"/><stop offset="1" stop-color="#38c8ff" stop-opacity="0"/></linearGradient>
-      </defs>
-      ${grid}
-      <line x1="${PL}" x2="${W - PR}" y1="${Y(last.c).toFixed(1)}" y2="${Y(last.c).toFixed(1)}" class="clast"/>
-      ${body}
-      <path class="carea" d="${linePath} L${(PL + step * (n - 1) + step / 2).toFixed(1)},${H - PB} L${(PL + step / 2).toFixed(1)},${H - PB} Z" fill="url(#cla-${key})"/>
-      <path class="cline" d="${linePath}" pathLength="1" stroke="url(#clg-${key})"/>
-      ${cs.map((c, i) => `<circle class="cdot ${i === n - 1 ? 'last' : ''}" cx="${(PL + step * i + step / 2).toFixed(1)}" cy="${Y(c.c).toFixed(1)}" r="${i === n - 1 ? 4 : n > 40 ? 1.6 : 2.6}" style="animation-delay:${(0.2 + (i / n) * 1.3).toFixed(2)}s"/>`).join('')}
-    </svg>
-    <div class="small ${better ? 'trend-up' : 'muted'}" style="margin-top:6px">${better ? `🔥 Tu te surpasses : mieux que ${perPrev}.` : `Moins bien que ${perPrev}. Le Système attend mieux.`}</div>`;
+    <div class="chart-box">
+      <svg class="chart" data-cid="${cid}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Graphique : glisse le doigt pour voir chaque point">
+        <defs>
+          <linearGradient id="clg-${cid}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#9a7bff"/><stop offset="1" stop-color="#38e0ff"/></linearGradient>
+          <linearGradient id="cla-${cid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#7a6bff" stop-opacity=".35"/><stop offset="1" stop-color="#38c8ff" stop-opacity="0"/></linearGradient>
+        </defs>
+        ${grid}
+        <line x1="${PL}" x2="${W - PR}" y1="${Y(last.c).toFixed(1)}" y2="${Y(last.c).toFixed(1)}" class="clast"/>
+        ${body}
+        ${areas.map(a => `<path class="carea" d="${a}" fill="url(#cla-${cid})"/>`).join('')}
+        ${paths.map(p => `<path class="cline" d="${p}" pathLength="1" stroke="url(#clg-${cid})"/>`).join('')}
+        ${filled.map(([s, i]) => `<circle class="cdot ${i === lastI ? 'last' : ''}" cx="${X(i).toFixed(1)}" cy="${Y(s.c.c).toFixed(1)}" r="${i === lastI ? 4 : dotR}" style="animation-delay:${(0.2 + (i / n) * 1.3).toFixed(2)}s"/>`).join('')}
+        <line class="cscrub" x1="0" x2="0" y1="${PT}" y2="${H - PB}"/>
+        <circle class="cscrub-dot" r="5" cx="-10" cy="-10"/>
+      </svg>
+      <div class="cbubble" hidden></div>
+    </div>
+    <div class="small ${better ? 'trend-up' : 'muted'}" style="margin-top:6px">${prevS ? (better ? `🔥 Tu te surpasses : mieux que ${perPrev}.` : `Moins bien que ${perPrev}. Le Système attend mieux.`) : 'Glisse le doigt sur le graphique pour voir chaque point.'}</div>`;
 }
+/* Doigt qui glisse : une bulle suit le doigt (jour, date, mois, année, valeurs) */
+function chartScrub(svg, ev) {
+  const ch = CHARTS[svg.dataset.cid];
+  if (!ch) return;
+  const r = svg.getBoundingClientRect();
+  const rot = !!svg.closest('.landscape.rot'); // vue paysage tournée de 90°
+  const lw = rot ? r.height : r.width, lh = rot ? r.width : r.height;
+  const x = (rot ? (ev.clientY - r.top) / r.height : (ev.clientX - r.left) / r.width) * ch.W;
+  const n = ch.slots.length;
+  let i = Math.max(0, Math.min(n - 1, Math.floor((x - ch.PL) / ch.step)));
+  if (!ch.slots[i].c) { let best = -1; for (let d = 1; d < n; d++) { if (i - d >= 0 && ch.slots[i - d].c) { best = i - d; break; } if (i + d < n && ch.slots[i + d].c) { best = i + d; break; } } if (best < 0) return; i = best; }
+  const s = ch.slots[i], c = s.c, cx = ch.PL + ch.step * i + ch.step / 2, cy = ch.Y(c.c);
+  const line = svg.querySelector('.cscrub'), dot = svg.querySelector('.cscrub-dot');
+  line.setAttribute('x1', cx); line.setAttribute('x2', cx); line.classList.add('on');
+  dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.classList.add('on');
+  const d = s.kind === 'm' ? null : parseKey(s.k);
+  const date = d ? `${capFirst(DAYS[d.getDay()])} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` : `${capFirst(MONTHS[+s.k.slice(5) - 1])} ${s.k.slice(0, 4)}`;
+  const delta = c.c - c.o;
+  const label = (CHART_SERIES.find(x => x.key === ch.key) || {}).label || '';
+  const vals = d && ch.hist && ch.hist.get(s.k) && ['power', 'physique', 'concentration', 'intelligence', 'discipline'].includes(ch.key)
+    ? `<div class="cb-stats">${STATS.map(t => `<span style="color:${STAT_COL[t.key]}">${t.icon} ${fmtStat(ch.hist.get(s.k)[t.key])}</span>`).join('')}</div>` : '';
+  const bub = svg.parentElement.querySelector('.cbubble');
+  bub.innerHTML = `<div class="cb-date">${esc(date)}</div><div class="cb-val"><b>${ch.fmtV(c.c)}</b> ${esc(label)} <span class="${(ch.inverse ? delta < 0 : delta > 0) ? 'trend-up' : delta === 0 ? '' : 'trend-down'}">${delta >= 0 ? '▲ +' : '▼ −'}${ch.key !== 'xp' && Math.abs(delta) < 0.05 ? Math.abs(delta).toFixed(2).replace('.', ',') : ch.fmtV(Math.abs(delta))}</span></div>${s.kind === 'm' ? `<div class="cb-hl">plus haut ${ch.fmtV(c.h)} · plus bas ${ch.fmtV(c.l)}</div>` : ''}${vals}`;
+  bub.hidden = false;
+  const px = (cx / ch.W) * lw, bw = bub.offsetWidth || 180, boxW = svg.parentElement.clientWidth || lw;
+  bub.style.left = Math.max(0, Math.min(boxW - bw, px - bw / 2)) + 'px';
+  bub.style.top = Math.max(0, (cy / ch.H) * lh - bub.offsetHeight - 14) + 'px';
+  if (chartScrub.last !== i) { chartScrub.last = i; if (navigator.vibrate) navigator.vibrate(4); }
+}
+function chartScrubEnd(svg) {
+  setTimeout(() => {
+    if (chartScrub.active) return;
+    const box = svg && svg.parentElement;
+    if (!box) return;
+    box.querySelector('.cbubble').hidden = true;
+    svg.querySelectorAll('.cscrub, .cscrub-dot').forEach(el => el.classList.remove('on'));
+  }, 1800);
+}
+document.addEventListener('pointerdown', e => { const svg = e.target.closest && e.target.closest('svg.chart'); if (!svg) return; chartScrub.active = svg; chartScrub(svg, e); });
+document.addEventListener('pointermove', e => { const svg = chartScrub.active || (e.pointerType === 'mouse' && e.target.closest && e.target.closest('svg.chart')); if (svg) chartScrub(svg, e); });
+['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, () => { const svg = chartScrub.active; chartScrub.active = null; if (svg) chartScrubEnd(svg); }));
 
 /* =========================================================
    CORPS : hologramme, poids, transformation, photos
@@ -2620,15 +2733,23 @@ function analyzeBilan(b, date) {
 
 /* Anneau de stat : plus la stat est haute, plus il grossit, brille et change de couleur */
 const GRADE_COL = { E: '#8fb0c8', D: '#3fe0a0', C: '#2fc4ff', B: '#4f7dff', A: '#a77bff', S: '#ffc35a' };
+/* Chaque stat a sa couleur ; un rond qui monte s'illumine, un rond qui baisse s'affaiblit */
+const STAT_COL = { physique: '#ff5c7a', concentration: '#38c8ff', intelligence: '#a77bff', discipline: '#ffc857' };
+function statTrend(key) {
+  const today = todayKey(), st = computeStats(state.logs, today);
+  const d = st.values[key] - (st.history.get(addDays(today, -7)) || st.base)[key];
+  return d > 0.05 ? 'up' : d < -0.05 ? 'down' : 'flat';
+}
 function statRing(s, v, delta, opts = {}) {
-  const g = gradeFor(v), col = GRADE_COL[g];
+  const g = gradeFor(v), col = STAT_COL[s.key] || GRADE_COL[g];
+  const trend = opts.trend || (ui.day0 ? 'flat' : statTrend(s.key));
   const size = Math.round(78 + v * 0.42);           // 82 px à 10, 120 px à 100
   const r = 42, c = 2 * Math.PI * r, off = c * (1 - v / 100);
-  const glow = (2 + v / 8).toFixed(1);
-  const nParts = v >= 80 ? 10 : v >= 65 ? 7 : v >= 50 ? 5 : v >= 35 ? 3 : 0;
+  const glow = ((2 + v / 8) * (trend === 'up' ? 1.8 : trend === 'down' ? 0.45 : 1)).toFixed(1);
+  const nParts = (v >= 80 ? 10 : v >= 65 ? 7 : v >= 50 ? 5 : v >= 35 ? 3 : 0) + (trend === 'up' ? 4 : 0);
   const parts = Array.from({ length: nParts }, (_, i) => `<i style="--a:${(i * 360) / nParts}deg;--t:${(3 + (i % 3)).toFixed(1)}s"></i>`).join('');
   return `
-    <div class="sring g-${g}" style="--col:${col};--size:${size}px;--glow:${glow}px">
+    <div class="sring g-${g} tr-${trend}" style="--col:${col};--size:${size}px;--glow:${glow}px">
       <div class="sring-wrap">
         ${parts ? `<div class="sring-orbit">${parts}</div>` : ''}
         <svg viewBox="0 0 100 100" class="sring-svg" aria-hidden="true">
@@ -2717,7 +2838,12 @@ function questIndex() {
   const byDate = new Map();
   const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, waste: 0, pushups: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
   for (const r of state.reps) get(r.date).pushups += r.n;
-  for (const l of state.logs) { const o = get(l.date); if (l.bad) o.waste += l.minutes || 30; else if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30; }
+  for (const l of state.logs) {
+    const o = get(l.date);
+    if (l.bad) { if (!l.kind || l.kind === 'screen' || l.kind === 'time') o.waste += l.minutes || 30; }
+    else if (isPhysical(l)) o.phys += l.minutes || 30; else if (isFocus(l)) o.focus += l.minutes || 30;
+    if (Array.isArray(l.ex)) for (const e of l.ex) if (e.id === 'pompes') o.pushups += (e.reps || 0) * (e.sets || 1);
+  }
   for (const m of state.meals) get(m.date).meals.add(m.meal);
   for (const b of state.bilans) get(b.date).bilan = true;
   questIndex._k = key; questIndex._v = byDate;
@@ -2809,15 +2935,16 @@ function renderQuestWindow(today, day = today) {
       <div class="qw-top"><span class="qw-bang">!</span><b class="qw-title">[QUÊTE QUOTIDIENNE]</b></div>
       <div class="qw-sub">${past ? `${esc(capFirst(fmtDayLong(day)))}${q.done ? ' · accomplie' : counts ? ' · à rattraper' : ' · avant le jour 0'}` : 'Préparation pour devenir plus fort'}</div>
       <div class="qw-goals">
-        ${q.goals.map((g, i) => `
-          <div class="qw-goal casc ${g.done ? 'done' : ''} ${g.max && !g.done ? 'over' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''}" style="--j:${i}">
-            <span class="qw-ico">${g.icon}</span>
+        ${q.goals.map((g, i) => { const rr = goalRatio(g), gl = g.max ? 0 : Math.min(5, Math.floor(rr)), arm = g.key === 'pushups' ? pushArm(g.cur) : ''; return `
+          <div class="qw-goal casc ${g.done ? 'done' : ''} ${g.max && !g.done ? 'over' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''} ${gl >= 2 ? 'gl gl' + gl : ''} ${arm ? 'has-arm' : ''} ${g.key === 'pushups' && g.cur >= 1000 ? 'p1000-ok' : ''}" style="--j:${i}" ${g.key === 'pushups' && g.cur >= 1000 ? `data-p1000="${day}" role="button"` : ''}>
+            <span class="qw-ico ${arm ? 'arm' : ''}">${arm || g.icon}</span>
             <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}${g.key === 'meals' && !g.done ? `<button type="button" class="qw-link" data-meals-for="${day}">＋ noter les repas ›</button>` : ''}</span>
-            <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
+            <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : g.reps ? `${fmtNum(g.cur)}/${g.target}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
             <i class="qw-check" aria-hidden="true">${g.max && !g.done ? '✕' : '✓'}</i>
             <em class="qw-prog ${g.max ? 'max' : ''}" style="width:${g.max ? Math.min(100, (g.cur / Math.max(1, g.target)) * 100) : Math.min(100, (g.cur / g.target) * 100)}%"></em>
+            ${g.key === 'pushups' && g.cur >= 1000 ? '<span class="qw-1000">🏆 1 000 POMPES · ouvrir ›</span>' : gl >= 2 ? `<span class="qw-over">×${gl}</span>` : ''}
           </div>
-          ${g.reps ? `<div class="qw-reps casc" style="--j:${i}">${[5, 10, 20, 25].map(n => `<button type="button" data-reps="${n}">+${n}</button>`).join('')}<button type="button" class="undo" data-reps="undo" aria-label="Annuler la dernière série" ${state.reps.some(r => r.date === day) ? '' : 'disabled'}>↶</button></div>` : ''}`).join('')}
+          ${g.reps ? `<div class="qw-reps casc" style="--j:${i}">${[5, 10, 20, 25].map(n => `<button type="button" data-reps="${n}">+${n}</button>`).join('')}<button type="button" class="undo" data-reps="undo" aria-label="Annuler la dernière série" ${state.reps.some(r => r.date === day) ? '' : 'disabled'}>↶</button></div>` : ''}`; }).join('')}
       </div>
       <div class="qw-reward">${q.done ? `✓ QUÊTE ACCOMPLIE${counts ? ` · +${QUEST_XP} XP obtenus` : ''}` : failedPast ? `✕ QUÊTE RATÉE · −${QUEST_PENALTY_XP} XP` : past ? 'Avant le jour 0 : pas de récompense' : `RÉCOMPENSE : +${QUEST_XP} XP`}</div>
       ${failedPast ? `<div class="qw-fix">↺ Oubli ? Ajoute ce que tu as fait ce jour-là : si la quête est complète, la pénalité est annulée et tu gagnes +${QUEST_XP + QUEST_PENALTY_XP} XP.</div>` : ''}
@@ -2829,10 +2956,12 @@ function renderQuestWindow(today, day = today) {
    Onglet 2 : Aujourd'hui
    ========================================================= */
 function entryHtml(l, withDelete = true) {
-  const meta = [l.minutes ? fmtMinutes(l.minutes) : (l.bad ? '1 fois' : 'Fait ✓'), (l.bad ? '▼ ' : '') + l.stats.map(k => statByKey[k].name).join(' · ')].filter(Boolean).join(' — ');
+  const det = l.bad ? badDetail(l) : l.ex ? exDetail(l) : '';
+  const meta = [det || (l.minutes ? fmtMinutes(l.minutes) : (l.bad ? '1 fois' : 'Fait ✓')), (l.bad ? '▼ ' : '') + l.stats.map(k => statByKey[k].name).join(' · ')].filter(Boolean).join(' — ');
+  const pic = l.kind === 'food' && l.junk ? junkArt(l.junk.dessin || 'burger') : esc(l.icon);
   return `
-    <div class="entry ${l.bad ? 'bad' : ''} ${l.id === ui.lastLogId ? 'fresh' : ''} ${l.quality > 1.05 ? 'q-up' : l.quality < 0.95 ? 'q-down' : ''}">
-      <div class="entry-emoji">${esc(l.icon)}</div>
+    <div class="entry ${l.bad ? 'bad' : ''} ${l.id === ui.lastLogId ? 'fresh' : ''} ${l.quality > 1.05 ? 'q-up' : l.quality < 0.95 ? 'q-down' : ''} ${l.tier ? 'tier-' + l.tier : ''}">
+      <div class="entry-emoji ${l.kind === 'food' ? 'art' : ''}">${pic}</div>
       <div class="entry-body">
         <div class="entry-title">${esc(l.name)}</div>
         <div class="entry-meta">${esc(meta)}</div>
@@ -2924,12 +3053,17 @@ function openLogSheet(activity, bad = false) {
   let dayChoice = 'today';
   const viewDay = todayView();
   const pastView = viewDay < todayKey();
+  const screen = bad && badKind(activity) === 'screen';
+  const nowHM = (() => { const d = new Date(); return pad2(d.getHours()) + ':' + pad2(Math.floor(d.getMinutes() / 5) * 5); })();
   const body = `
     <div class="small ${bad ? 'trend-down' : 'muted'}" style="margin:-8px 0 14px">${bad ? '▼ Fait baisser : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') + ' · retire de l’XP' : activity.stats.length ? 'Fait monter : ' + activity.stats.map(k => statByKey[k].icon + ' ' + statByKey[k].name).join(', ') : "Ne fait monter aucune stat (modifiable dans Réglages)"}</div>
     ${pastView ? `<div class="log-day-fixed">↺ Pour le ${esc(fmtDayLong(viewDay))}</div>` : `<div class="seg" style="margin-bottom:14px">
       <button type="button" class="on" data-day="today">Aujourd'hui</button>
       <button type="button" data-day="yesterday">Hier</button>
     </div>`}
+    ${screen ? `<label class="field t0-field"><span>Heure de début de la session</span>
+      <input class="input" id="log-t0" type="time" value="${nowHM}">
+      <small class="t0-hint" id="t0-hint"></small></label>` : ''}
     <label class="field"><span>${bad ? 'Petite note (facultatif)' : 'Note : le Système la lit et juge la qualité de ta séance'}</span>
       <input class="input" id="log-note" maxlength="280" placeholder="${bad ? 'Ex : scrollé au lit avant de dormir' : 'Ex : séance intense, record au développé couché'}" autocomplete="off">
     </label>
@@ -2951,6 +3085,8 @@ function openLogSheet(activity, bad = false) {
     body,
     buttons: [{ label: 'Annuler', value: null, cls: 'ghost' }],
     onMount(sheet, close) {
+      const t0Hint = () => { const el = $('#t0-hint', sheet); if (!el) return; const m = screenMult($('#log-t0', sheet).value); el.textContent = m < 1 ? `🌙 Soirée : perte d’XP réduite (×${String(m).replace('.', ',')}). Le soir, tu as le droit de te détendre.` : `☀️ Avant ${REGLAGES_MAL.ecranHeureSoir} h : perte d’XP normale (×1). La journée, c’est le travail.`; el.className = 't0-hint ' + (m < 1 ? 'eve' : 'day'); };
+      if (screen) { t0Hint(); $('#log-t0', sheet).addEventListener('input', t0Hint); }
       sheet.addEventListener('click', e => {
         const dayBtn = e.target.closest('[data-day]');
         if (dayBtn) {
@@ -2972,15 +3108,16 @@ function openLogSheet(activity, bad = false) {
         }
         const note = $('#log-note', sheet).value.trim();
         const date = pastView ? viewDay : dayChoice === 'yesterday' ? addDays(todayKey(), -1) : todayKey();
+        const extra = screen ? { kind: 'screen', t0: $('#log-t0', sheet).value || nowHM } : {};
         close(null);
-        addLog(activity, minutes, note, date, bad);
+        addLog(activity, minutes, note, date, bad, extra);
       });
     },
   });
 }
 
-function addLog(activity, minutes, note, date, bad = false) {
-  if (bad) return addBadLog(activity, minutes, note, date);
+function addLog(activity, minutes, note, date, bad = false, extra = {}) {
+  if (bad) return addBadLog(activity, minutes, note, date, extra);
   const today = todayKey();
   const before = levelInfo(totalXp());
   const statsBefore = computeStats(state.logs, today).values;
@@ -3037,7 +3174,7 @@ function addLog(activity, minutes, note, date, bad = false) {
 }
 
 /* Ce que j'ai mal fait : −1 XP par minute (−25 XP pour "1 fois"), stats en baisse */
-function addBadLog(activity, minutes, note, date) {
+function addBadLog(activity, minutes, note, date, extra = {}) {
   const today = todayKey();
   const before = levelInfo(totalXp());
   const statsBefore = computeStats(state.logs, today).values;
@@ -3046,6 +3183,12 @@ function addBadLog(activity, minutes, note, date) {
     minutes: minutes || null, note: note.slice(0, 280), stats: [...activity.stats], difficulty: 'normal',
     bad: true, xp: -entryXp(minutes, 'normal'), quality: 1, verdict: '',
   };
+  // écrans : perte réduite le soir (heure de début)
+  if (extra.kind === 'screen') {
+    log.kind = 'screen'; log.t0 = extra.t0; log.mult = screenMult(extra.t0);
+    log.xp = -Math.max(1, Math.round(entryXp(minutes, 'normal') * log.mult));
+    log.pts = (minutes ? Math.min(minutes, RULES.entryMaxMinutes) / RULES.minutesPerPoint : RULES.donePoints) * log.mult;
+  } else if (extra.kind) Object.assign(log, extra);
   ui.lastLogId = log.id;
   const qBefore = dailyQuest(date);
   snapshotForAnim();
@@ -3056,14 +3199,15 @@ function addBadLog(activity, minutes, note, date) {
     .map(g => `${statByKey[g.k].name} ${g.d.toFixed(2).replace('.', ',')}`);
   const qAfter = dailyQuest(date);
   render();
+  if (log.xp === 0) { sfx('success'); haptic(); toast(log.kind === 'sleep' ? 'Sommeil OK' : 'Noté', log.kind === 'sleep' ? 'Couché dans les temps : pas de perte d’XP.' : badDetail(log)); return; }
   sfx('penalty'); haptic(2);
   const lostGoal = qBefore.goals.some(g => g.key === 'waste' && g.done) && qAfter.goals.some(g => g.key === 'waste' && !g.done);
   flyXp(ui.tapRect, log.xp).then(() => celebrate({
     kind: 'fail',
-    title: 'TEMPS PERDU',
+    title: log.kind === 'food' ? 'MALBOUFFE' : log.kind === 'sleep' ? (log.xp < 0 ? 'COUCHÉ TROP TARD' : 'SOMMEIL OK') : log.kind === 'alcohol' ? 'ALCOOL' : 'TEMPS PERDU',
     icon: log.icon,
-    big: `−${Math.abs(log.xp)} XP`,
-    sub: `${log.name}${log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
+    big: log.xp < 0 ? `−${Math.abs(log.xp)} XP` : '0 XP',
+    sub: `${log.name}${badDetail(log) ? ' · ' + badDetail(log) : log.minutes ? ' · ' + fmtMinutes(log.minutes) : ''}`,
     chips: losses,
     lines: [lostGoal ? `⚠ Limite de temps perdu dépassée : la quête quotidienne est compromise.` : 'Le Système enregistre tout. Rattrape-toi avec une vraie quête.'],
   })).then(() => {
@@ -3371,7 +3515,22 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Effets</div></div>
       <label class="field toggle"><span>🔊 Sons du Système</span><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}></label>
-      <label class="field toggle" style="margin-bottom:0"><span>📳 Vibrations (iPhone iOS 18+ et Android)</span><input type="checkbox" data-pref="vibrate" ${prefs.vibrate ? 'checked' : ''}></label>
+      <label class="field toggle"><span>📳 Vibrations (iPhone iOS 18+ et Android)</span><input type="checkbox" data-pref="vibrate" ${prefs.vibrate ? 'checked' : ''}></label>
+      <label class="field toggle"><span>🎵 Musique (7 paliers selon ton surpassement)</span><input type="checkbox" data-pref="music" ${prefs.music !== false ? 'checked' : ''}></label>
+      <label class="field" style="margin-bottom:0"><span>Volume de la musique</span><input type="range" min="0" max="100" step="5" class="mus-vol" data-musvol="1" value="${Math.round((prefs.musicVol != null ? prefs.musicVol : 0.5) * 100)}"></label>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Sommeil</div></div>
+      <p class="small muted" style="margin:-4px 0 10px">Un adulte a besoin d'environ 7 à 9 h de sommeil. Heure de coucher conseillée = lever − ${REGLAGES_MAL.sommeilHeures} h : <b>${esc(fmtHm(minToHm(hmToMin(state.body.wakeTime || '07:30') - REGLAGES_MAL.sommeilHeures * 60)))}</b>.</p>
+      <label class="field" style="margin-bottom:0"><span>Mon heure de lever habituelle</span><input class="input" type="time" data-wake="1" value="${esc(state.body.wakeTime || '07:30')}"></label>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Mes exercices & produits</div><div class="panel-sub">${state.customExercises.length + state.customJunk.length}</div></div>
+      ${state.customExercises.map(x => `<div class="setting-activity"><div class="entry-emoji">⭐</div><div class="entry-body"><div class="entry-title">${esc(x.nom)}</div><div class="entry-meta">${x.type === 'charge' ? 'en kilos' : x.type === 'duree' ? 'durée' : 'au nombre'} · difficulté ×${fmtG(x.coef)}</div></div><button class="icon-btn danger" data-del-cex="${esc(x.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
+      ${state.customJunk.map(x => `<div class="setting-activity"><div class="entry-emoji art">${junkArt('burger')}</div><div class="entry-body"><div class="entry-title">${esc(x.nom)}</div><div class="entry-meta">${esc((MALBOUFFE_ENSEIGNES.find(e => e.id === x.e) || {}).nom || x.e)} · ${fmtNum(x.kcal)} kcal</div></div><button class="icon-btn danger" data-del-cjunk="${esc(x.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
+      ${state.customExercises.length + state.customJunk.length ? '' : '<p class="small muted" style="margin:0">Ajoute un exercice dans Aujourd\'hui → Sport (« Autre exercice »), ou un produit dans Malbouffe (« Mon produit »). Les coefficients et le tableau des fast-foods sont dans le fichier reglages.js.</p>'}
     </section>
 
     <section class="panel">
@@ -3648,6 +3807,745 @@ async function resetAll() {
 }
 
 /* =========================================================
+   v3 · SURPASSEMENT : paliers, musique, lumière, sons de jeu,
+   sport par exercice, mauvaises habitudes plus justes
+   ========================================================= */
+
+/* ---------- Détails des entrées (vérifiés au chargement / à l'import) ---------- */
+function cleanLogDetails(l) {
+  const o = {};
+  const fin = (v, a, b) => Number.isFinite(v) && v >= a && v <= b;
+  const hm = v => (typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : null);
+  const TIERS = ['normal', 'fort', 'legendaire'];
+  if (BAD_KINDS.includes(l.kind)) o.kind = l.kind;
+  if (hm(l.t0)) o.t0 = l.t0;
+  if (fin(l.mult, 0, 2)) o.mult = l.mult;
+  if (fin(l.pts, 0, 50)) o.pts = l.pts;
+  if (TIERS.includes(l.tier)) o.tier = l.tier;
+  if (Array.isArray(l.ex)) o.ex = l.ex.filter(e => e && typeof e.nom === 'string').slice(0, 20).map(e => ({
+    id: typeof e.id === 'string' ? e.id.slice(0, 40) : 'x', nom: e.nom.slice(0, 40), type: ['nombre', 'charge', 'duree'].includes(e.type) ? e.type : 'nombre',
+    coef: fin(e.coef, 0, 20) ? e.coef : 1, reps: fin(e.reps, 0, 10000) ? Math.round(e.reps) : 0, sets: fin(e.sets, 0, 100) ? Math.round(e.sets) : 1,
+    kg: fin(e.kg, 0, 1000) ? e.kg : 0, min: fin(e.min, 0, 1440) ? Math.round(e.min) : 0, xp: fin(e.xp, 0, 5000) ? Math.round(e.xp) : 0,
+    tier: TIERS.includes(e.tier) ? e.tier : 'normal', rec: e.rec === true,
+  }));
+  if (l.junk && typeof l.junk === 'object') {
+    const j = l.junk;
+    o.junk = { e: String(j.e || 'autre').slice(0, 12), en: String(j.en || '').slice(0, 30), dessin: String(j.dessin || 'burger').slice(0, 12), kcal: fin(j.kcal, 0, 10000) ? Math.round(j.kcal) : 0,
+      items: Array.isArray(j.items) ? j.items.slice(0, 12).map(x => ({ nom: String(x.nom || '').slice(0, 50), kcal: fin(x.kcal, 0, 5000) ? Math.round(x.kcal) : 0, q: fin(x.q, 1, 20) ? Math.round(x.q) : 1, dessin: String(x.dessin || '').slice(0, 12) })) : [] };
+  }
+  if (l.sleep && typeof l.sleep === 'object') {
+    const s = l.sleep;
+    o.sleep = { bed: hm(s.bed), wake: hm(s.wake), dur: fin(s.dur, 0, 1440) ? Math.round(s.dur) : 0, delay: fin(s.delay, -1440, 1440) ? Math.round(s.delay) : 0 };
+  }
+  if (fin(l.glasses, 1, 50)) o.glasses = Math.round(l.glasses);
+  return o;
+}
+
+/* ---------- Ce que j'ai mal fait : quel type ? ---------- */
+function badKind(a) {
+  if (a.kind && BAD_KINDS.includes(a.kind)) return a.kind;
+  const id = a.id || '', n = normTxt(a.name || '');
+  if (/b-reseaux|b-jeux|b-series/.test(id) || /tiktok|insta|snap|reseau|jeu|youtube|netflix|serie|twitch|scroll|telephone|ecran/.test(n)) return 'screen';
+  if (id === 'b-malbouffe' || /malbouffe|mcdo|fast|kebab|burger/.test(n)) return 'food';
+  if (id === 'b-tard' || /couche|dormi|tard|sommeil/.test(n)) return 'sleep';
+  if (id === 'b-soiree' || /alcool|soiree|biere|boire|verre/.test(n)) return 'alcohol';
+  return 'time';
+}
+const hmToMin = hm => { const [h, m] = String(hm || '00:00').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const minToHm = m => { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60); };
+const fmtHm = hm => (hm ? hm.replace(':', ' h ') : '?');
+/* Écrans : avant 20 h = perte normale (×1) ; après 20 h (et la nuit jusqu'à 5 h) = ×0,5 */
+function screenMult(t0) { const h = Math.floor(hmToMin(t0) / 60); return h >= REGLAGES_MAL.ecranHeureSoir || h < 5 ? REGLAGES_MAL.ecranCoefSoir : 1; }
+function badDetail(l) {
+  if (l.kind === 'screen') return `${l.minutes ? fmtMinutes(l.minutes) : '1 fois'}${l.t0 ? ' à ' + fmtHm(l.t0) : ''}${l.mult && l.mult < 1 ? ' · soirée ×' + String(l.mult).replace('.', ',') : ''}`;
+  if (l.kind === 'food' && l.junk) return `${l.junk.items.map(x => (x.q > 1 ? x.q + '× ' : '') + x.nom).join(' + ')} · ${fmtNum(l.junk.kcal)} kcal`;
+  if (l.kind === 'sleep' && l.sleep) return `couché à ${fmtHm(l.sleep.bed)} · ${fmtMinutes(l.sleep.dur) || '0 min'} de sommeil · ${l.sleep.delay > 0 ? fmtMinutes(l.sleep.delay) + ' de retard' : 'à l’heure'}`;
+  if (l.kind === 'alcohol' && l.glasses) return `${l.glasses} verre${l.glasses > 1 ? 's' : ''}`;
+  return '';
+}
+function exDetail(l) {
+  const parts = (l.ex || []).map(e => e.type === 'charge' ? `${e.nom} ${e.sets}×${e.reps} à ${fmtG(e.kg)} kg` : e.type === 'duree' ? `${e.nom} ${fmtMinutes(e.min)}` : `${e.nom} ${e.sets > 1 ? e.sets + '×' + e.reps : e.reps}`);
+  return parts.join(' · ') + (l.minutes ? ` · séance ${fmtMinutes(l.minutes)}` : '');
+}
+/* Choix du jour dans les fenêtres (Aujourd'hui / Hier, ou jour fixé en mode rattrapage) */
+function sheetDayHtml(defYesterday = false) {
+  const vd = todayView();
+  if (vd < todayKey()) return `<div class="log-day-fixed">↺ Pour le ${esc(fmtDayLong(vd))}</div>`;
+  return `<div class="seg" style="margin-bottom:14px"><button type="button" class="${defYesterday ? '' : 'on'}" data-day="today">Aujourd'hui</button><button type="button" class="${defYesterday ? 'on' : ''}" data-day="yesterday">Hier</button></div>`;
+}
+function sheetDay(sheet) {
+  const vd = todayView();
+  if (vd < todayKey()) return vd;
+  const b = sheet.querySelector('[data-day].on');
+  return b && b.dataset.day === 'yesterday' ? addDays(todayKey(), -1) : todayKey();
+}
+function sheetDayClick(sheet, e) {
+  const b = e.target.closest('[data-day]');
+  if (!b) return false;
+  sheet.querySelectorAll('[data-day]').forEach(x => x.classList.toggle('on', x === b));
+  return true;
+}
+
+/* =========================================================
+   SURPASSEMENT DU JOUR → palier de musique et de lumière
+   avancement = moyenne de (fait ÷ objectif) des quêtes du jour
+   ========================================================= */
+const goalRatio = g => (g.max ? (g.cur <= g.target ? 1 : Math.max(0, g.target / Math.max(1, g.cur))) : Math.max(0, g.cur / Math.max(1, g.target)));
+function surpassInfo(date = todayKey()) {
+  const q = dailyQuest(date);
+  if (!q.goals.length) return { avg: 0, tier: 0, q };
+  const avg = q.goals.reduce((s, g) => s + goalRatio(g), 0) / q.goals.length;
+  let tier = 0;
+  for (const p of REGLAGES_PALIERS) if (avg >= p.avancement - 1e-9) tier = Math.max(tier, p.n);
+  if (tier >= 2 && !q.done) tier = 1; // palier 2 et + : toutes les quêtes doivent être faites
+  return { avg, tier, q };
+}
+const TIER_KEY = 'monSysteme.palier';
+let shownTier = null;
+/* Le palier ne redescend pas dans la journée */
+function dayTier() {
+  const today = todayKey();
+  const s = surpassInfo(today);
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(TIER_KEY) || 'null'); } catch (_) {}
+  const prev = saved && saved.d === today ? saved.t : 0;
+  const tier = Math.max(prev, s.tier);
+  if (!saved || saved.d !== today || saved.t !== tier) { try { localStorage.setItem(TIER_KEY, JSON.stringify({ d: today, t: tier })); } catch (_) {} }
+  return { tier, s };
+}
+function applyTier() {
+  if (typeof Musique === 'undefined') return;
+  const { tier, s } = dayTier();
+  const root = document.documentElement;
+  if (root.dataset.tier !== String(tier)) root.dataset.tier = tier;
+  Musique.setTier(tier);
+  updateMusicBtn(tier);
+  if (tier >= 6) ensureSparkles(); else removeSparkles();
+  if (shownTier !== null && tier > shownTier) announceTier(tier, s);
+  shownTier = tier;
+}
+/* attend que les grandes animations en cours soient finies */
+function whenCalm(fn, wait = 300) {
+  const go = () => (document.querySelector('.celebrate, .lvlup, .ultime, .p1000') ? setTimeout(go, 400) : fn());
+  setTimeout(go, wait);
+}
+function announceTier(t, s) {
+  whenCalm(() => {
+    if (t === 6) return ultimateExplosion(s);
+    if (t === 1) return toast('Palier 1 · En route', 'La moitié est faite : la musique accélère.');
+    if (t === 2) return; // la fenêtre « QUÊTE ACCOMPLIE » s'en charge
+    tierBanner(t, s);
+  }, 700);
+}
+function tierBanner(t, s) {
+  const el = document.createElement('div');
+  el.className = 'tier-banner tb-' + t;
+  el.innerHTML = `<div class="tb-tag">[SYSTÈME] PALIER ${t}</div><b>${esc(REGLAGES_PALIERS[t].nom.toUpperCase())}</b><span>Avancement ${fmtNum(s.avg * 100)} % · ${t >= 5 ? 'la couleur du Système change' : t >= 4 ? 'tes quêtes brillent fort' : 'tes quêtes brillent'}</span>`;
+  document.body.appendChild(el);
+  sfx('g' + Math.min(5, t)); haptic(2);
+  setTimeout(() => el.classList.add('out'), 2700);
+  setTimeout(() => el.remove(), 3200);
+}
+/* MODE ULTIME : explosion de lumière (≈ 4 s), puis l'app reste très brillante mais lisible */
+function ultimateExplosion(s) {
+  const ov = document.createElement('div');
+  ov.className = 'ultime';
+  ov.innerHTML = `<div class="ul-flash"></div><div class="ul-rays"></div><div class="ul-rays r2"></div>
+    <div class="ul-parts">${Array.from({ length: 64 }, (_, i) => `<i style="--a:${((i * 360) / 64 + Math.random() * 5).toFixed(1)}deg;--r:${(170 + Math.random() * 260) | 0}px;--d:${(Math.random() * 700) | 0}ms;--s:${(3 + Math.random() * 6).toFixed(1)}px"></i>`).join('')}</div>
+    <div class="ul-box"><div class="ul-tag">[SYSTÈME] ALERTE</div><div class="ul-title">MODE ULTIME</div><div class="ul-big">+${fmtNum((s.avg - 1) * 100)} %</div><div class="ul-sub">Surpassement absolu. Le Système n'avait jamais vu ça.</div></div>`;
+  document.body.appendChild(ov);
+  sfx('ultime'); haptic(3); setTimeout(() => haptic(3), 1000);
+  setTimeout(() => ov.classList.add('out'), 4000);
+  setTimeout(() => ov.remove(), 4700);
+}
+function ensureSparkles() {
+  if ($('#fx-sparkle')) return;
+  const box = document.createElement('div');
+  box.id = 'fx-sparkle';
+  box.setAttribute('aria-hidden', 'true');
+  box.innerHTML = Array.from({ length: 30 }, () => `<i style="left:${(Math.random() * 100).toFixed(1)}%;--d:${(Math.random() * 8).toFixed(2)}s;--t:${(6 + Math.random() * 6).toFixed(1)}s;--s:${(2 + Math.random() * 4).toFixed(1)}px;--x:${((Math.random() - 0.5) * 60) | 0}px"></i>`).join('');
+  document.body.insertBefore(box, document.body.firstChild);
+}
+function removeSparkles() { const b = $('#fx-sparkle'); if (b) b.remove(); }
+
+/* La couleur de toute l'app évolue avec la progression globale */
+function setProgTheme() {
+  try { const g = progressionInfo(todayKey()).grade; if (document.documentElement.dataset.prog !== g) document.documentElement.dataset.prog = g; } catch (_) {}
+}
+
+/* ---------- Bouton musique (toujours visible) ---------- */
+function updateMusicBtn(tier = shownTier || 0) {
+  const b = $('#music-btn'), s = $('#music-set');
+  if (b) { b.textContent = prefs.music !== false ? '🔊' : '🔇'; b.classList.toggle('off', prefs.music === false); b.setAttribute('aria-label', prefs.music !== false ? 'Couper la musique' : 'Remettre la musique'); }
+  if (s) s.textContent = 'P' + tier;
+}
+function openMusicPanel() {
+  const t = shownTier || 0;
+  openSheet({
+    tag: '[SYSTÈME] Musique',
+    title: '🎵 Musique du Système',
+    body: `
+      <div class="mus-row"><span>Musique</span><button type="button" class="btn small ${prefs.music !== false ? 'primary' : ''}" data-mus-toggle="1">${prefs.music !== false ? '🔊 Activée' : '🔇 Coupée'}</button></div>
+      <label class="field"><span>Volume</span><input type="range" min="0" max="100" step="5" value="${Math.round((prefs.musicVol != null ? prefs.musicVol : 0.5) * 100)}" id="mus-vol" class="mus-vol"></label>
+      <div class="mus-tiers">${REGLAGES_PALIERS.map(p => `<div class="mus-tier ${p.n === t ? 'on' : p.n < t ? 'past' : ''}"><b>P${p.n}</b><span>${esc(p.nom)}</span><em>${esc(Musique.themes[p.n])}</em></div>`).join('')}</div>
+      <p class="small faint">Musiques originales, créées par l'app et jouées en direct : libres de droits (CC0). Sur iPhone, la musique démarre après ton premier toucher. En mode silencieux, l'iPhone peut couper le son.</p>`,
+    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
+    onMount(sheet) {
+      sheet.addEventListener('click', e => {
+        const tg = e.target.closest('[data-mus-toggle]');
+        if (!tg) return;
+        toggleMusic();
+        tg.textContent = prefs.music !== false ? '🔊 Activée' : '🔇 Coupée';
+        tg.classList.toggle('primary', prefs.music !== false);
+      });
+      $('#mus-vol', sheet).addEventListener('input', e => { prefs.musicVol = +e.target.value / 100; savePrefs(); Musique.setVolume(prefs.musicVol); });
+    },
+  });
+}
+function toggleMusic() {
+  prefs.music = prefs.music === false;
+  savePrefs();
+  Musique.unlock();
+  Musique.setEnabled(prefs.music);
+  updateMusicBtn();
+  haptic();
+}
+
+/* =========================================================
+   SONS DE JEU (0,6 à 1,2 s) : progression par quart, validation, brillance
+   ========================================================= */
+const arpS = (base, steps, gap, last, vol, type = 'square') => steps.map((st, i) => [base * Math.pow(2, st / 12), i * gap, i === steps.length - 1 ? last : gap * 1.7, vol, type]);
+const GAME_SOUNDS = {
+  q0: arpS(330, [0, 3, 7], 0.12, 0.4, 0.05),
+  q1: arpS(392, [0, 3, 7, 12], 0.11, 0.42, 0.055),
+  q2: arpS(466, [0, 4, 7, 12, 16], 0.1, 0.45, 0.06),
+  q3: arpS(523, [0, 4, 7, 12, 16, 19], 0.09, 0.5, 0.065),
+  valid: [...arpS(523, [0, 4, 7, 12], 0.11, 0.12, 0.07), [1047, 0.46, 0.7, 0.07, 'square'], [1319, 0.46, 0.7, 0.05, 'triangle'], [1568, 0.46, 0.7, 0.05, 'triangle'], [523, 0.46, 0.7, 0.07, 'triangle']],
+  x1: arpS(880, [0, 7, 12, 19], 0.08, 0.36, 0.045, 'triangle'),
+  x2: arpS(988, [0, 7, 12, 19], 0.08, 0.36, 0.045, 'triangle'),
+  x3: arpS(1109, [0, 7, 12, 19], 0.08, 0.38, 0.045, 'triangle'),
+  x4: arpS(1245, [0, 7, 12, 19, 24], 0.075, 0.38, 0.045, 'triangle'),
+  x5: arpS(1397, [0, 7, 12, 19, 24], 0.075, 0.4, 0.045, 'triangle'),
+  g2: [...arpS(659, [0, 4, 7, 12, 16, 19, 24], 0.07, 0.45, 0.05), [330, 0, 0.6, 0.06, 'triangle']],
+  g3: [...arpS(740, [0, 4, 7, 12, 16, 19, 24, 28], 0.065, 0.5, 0.05), [370, 0, 0.7, 0.07, 'triangle'], [1480, 0.55, 0.45, 0.03, 'sine']],
+  g4: [...arpS(831, [0, 3, 7, 12, 15, 19, 24, 27, 31], 0.06, 0.55, 0.05), [208, 0, 0.9, 0.08, 'sawtooth'], [1661, 0.6, 0.5, 0.035, 'sine']],
+  g5: [...arpS(988, [0, 4, 7, 11, 12, 16, 19, 23, 24, 28], 0.055, 0.6, 0.05), [247, 0, 1.1, 0.09, 'sawtooth'], [494, 0.55, 0.6, 0.06, 'square'], [1976, 0.6, 0.55, 0.035, 'sine']],
+  fort: [...arpS(440, [0, 4, 7, 12, 16], 0.09, 0.5, 0.07), [220, 0, 0.8, 0.08, 'sawtooth']],
+  legend: [...arpS(392, [0, 4, 7, 12, 16, 19, 24, 28, 31], 0.08, 0.6, 0.07), [196, 0, 1.2, 0.1, 'sawtooth'], [1568, 0.7, 0.5, 0.05, 'sine'], [2093, 0.75, 0.45, 0.04, 'sine']],
+  ultime: [...arpS(523, [0, 4, 7, 12, 16, 19, 24, 28, 31, 36], 0.07, 0.8, 0.07), [131, 0, 1.6, 0.12, 'sawtooth'], [262, 0.3, 1.3, 0.08, 'square'], [2093, 0.8, 0.8, 0.05, 'sine'], [2637, 0.9, 0.7, 0.04, 'sine']],
+};
+/* son selon la progression d'une quête (ratio avant → après) */
+function questSound(r0, r1) {
+  if (r1 >= 1 && r0 < 1) return sfx('valid');
+  const b0 = Math.floor(r0), b1 = Math.floor(r1);
+  if (r1 >= 2 && b1 > b0) return sfx('g' + Math.min(5, b1));
+  if (r1 < 1) return sfx('q' + Math.min(3, Math.floor(r1 * 4)));
+  return sfx('x' + Math.min(5, Math.max(1, b1)));
+}
+
+/* =========================================================
+   POMPES : bras qui évoluent (600 / 700 / 800) et page 1 000
+   ========================================================= */
+const ARM_PATH = 'M8 58 C8 44 14 34 24 30 C32 27 36 32 38 36 C40 30 40 22 38 16 C37 10 42 6 48 7 C55 8 58 14 56 20 C54 24 52 26 52 30 C54 40 56 50 50 56 C44 61 30 60 20 60 C14 60 10 60 8 58 Z';
+function pushArm(n) {
+  if (n < 600) return '';
+  if (n < 700) return `<svg class="arm-svg a1" viewBox="0 0 64 64" aria-label="Bras d'alien"><defs><radialGradient id="ga1" cx="35%" cy="40%" r="70%"><stop offset="0" stop-color="#d4ffb0"/><stop offset=".5" stop-color="#4fe36b"/><stop offset="1" stop-color="#0a6b33"/></radialGradient></defs>
+    <path d="${ARM_PATH}" fill="url(#ga1)" stroke="#caffb0" stroke-width="1.6"/>
+    <path d="M16 46 C20 40 26 38 30 40 M40 24 C44 30 48 36 48 46" stroke="#1d8f45" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    <path d="M44 6 L42 0 M50 6 L51 0 M56 10 L61 6" stroke="#eaffd8" stroke-width="2.2" stroke-linecap="round"/>
+    <circle cx="25" cy="38" r="2.4" fill="#eaffd8"/><circle cx="31" cy="35" r="1.6" fill="#eaffd8"/></svg>`;
+  if (n < 800) return `<svg class="arm-svg a2" viewBox="0 0 64 64" aria-label="Bras cybernétique"><defs><linearGradient id="ga2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e3d4ff"/><stop offset=".45" stop-color="#8f5bff"/><stop offset="1" stop-color="#2a0f6b"/></linearGradient></defs>
+    <path d="${ARM_PATH}" fill="url(#ga2)" stroke="#e3d4ff" stroke-width="1.6"/>
+    <path d="M14 50 L34 50 M18 42 L36 42 M40 30 L54 30 M41 22 L55 22" stroke="#c9b6ff" stroke-width="1.2" opacity=".8"/>
+    <path class="arm-bolt" d="M20 54 L26 46 L23 45 L30 36 M44 40 L48 33 L45 32 L50 24" stroke="#7fe0ff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle class="arm-core" cx="27" cy="37" r="4.2" fill="#7fe0ff"/></svg>`;
+  return `<svg class="arm-svg a3" viewBox="0 0 64 64" aria-label="Bras légendaire"><defs><radialGradient id="ga3" cx="40%" cy="40%" r="75%"><stop offset="0" stop-color="#fffbe6"/><stop offset=".45" stop-color="#ffc35a"/><stop offset="1" stop-color="#b3420a"/></radialGradient></defs>
+    <path class="arm-flame" d="M6 60 C2 46 6 30 14 24 C12 34 18 36 20 28 C24 16 34 8 46 2 C42 10 50 12 60 8 C56 18 62 26 60 40 C58 52 54 60 50 62 Z" fill="#ff7a1a" opacity=".55"/>
+    <path d="${ARM_PATH}" fill="url(#ga3)" stroke="#fff3c4" stroke-width="1.8"/>
+    <path class="arm-bolt" d="M16 52 L24 44 L20 43 L30 32 M42 40 L47 31 L43 30 L50 20" stroke="#ffffff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M30 6 l1.5 3.5 3.5 1.5 -3.5 1.5 -1.5 3.5 -1.5 -3.5 -3.5 -1.5 3.5 -1.5z M58 46 l1 2.4 2.4 1 -2.4 1 -1 2.4 -1 -2.4 -2.4 -1 2.4 -1z" fill="#fff"/></svg>`;
+}
+function openPushupPage(day) {
+  const n = (dailyQuest(day).goals.find(g => g.key === 'pushups') || {}).cur || 0;
+  const d = parseKey(day);
+  const ov = document.createElement('div');
+  ov.className = 'p1000';
+  ov.innerHTML = `
+    <div class="p1-rays"></div><div class="p1-glow"></div>
+    <div class="p1-parts">${Array.from({ length: 40 }, (_, i) => `<i style="--a:${(i * 9).toFixed(0)}deg;--r:${(150 + (i % 5) * 45)}px;--d:${(i % 8) * 120}ms"></i>`).join('')}</div>
+    <button type="button" class="p1-close" aria-label="Fermer">✕</button>
+    <div class="p1-box">
+      <div class="p1-tag">[SYSTÈME] EXPLOIT</div>
+      <div class="p1-arm">${pushArm(1000)}</div>
+      <div class="p1-title">1 000 POMPES</div>
+      <div class="p1-count"><b data-p1-count="${n}">0</b><span>pompes</span></div>
+      <div class="p1-date">${esc(capFirst(DAYS[d.getDay()]))} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}</div>
+      <div class="p1-msg">Moins de 1 % des gens en sont capables <em>(estimation)</em></div>
+      <p class="p1-note">Aucune étude ne mesure combien de personnes peuvent faire 1 000 pompes en une journée : c'est une estimation. Repère : dans un sondage de 2021 (Gymless.org, adultes américains), 53,8 % ne dépassent pas 10 pompes d'affilée.</p>
+    </div>`;
+  document.body.appendChild(ov);
+  sfx('ultime'); haptic(3);
+  const b = ov.querySelector('[data-p1-count]'), t0 = performance.now();
+  const stepC = now => { const k = Math.min(1, (now - t0) / 1800); b.textContent = fmtNum(n * (1 - Math.pow(1 - k, 3))); if (k < 1 && ov.isConnected) requestAnimationFrame(stepC); };
+  requestAnimationFrame(stepC);
+  const close = () => { ov.classList.add('out'); setTimeout(() => ov.remove(), 400); };
+  ov.querySelector('.p1-close').addEventListener('click', close);
+}
+
+/* =========================================================
+   RANGS A ET S : régularité sur des semaines + vrai changement physique
+   ========================================================= */
+let _recs = { k: '', v: null };
+/* Records d'exercice (charge max, ou volume max d'une séance) et nombre de records battus */
+function exerciseRecords() {
+  const k = state.logs.length + '|' + state.logs.reduce((s, l) => s + (l.ex ? l.ex.length : 0), 0) + '|' + state.logs.reduce((s, l) => s + (l.xp || 0), 0);
+  if (_recs.k === k) return _recs.v;
+  const best = new Map();
+  let beaten = 0;
+  for (const l of state.logs.filter(x => x.ex).sort((a, b) => (a.date + a.ts).localeCompare(b.date + b.ts))) {
+    for (const e of l.ex) {
+      const m = exMetric(e);
+      if (!(m > 0)) continue;
+      if (best.has(e.id) && m > best.get(e.id)) beaten++;
+      if (!best.has(e.id) || m > best.get(e.id)) best.set(e.id, m);
+    }
+  }
+  _recs = { k, v: { best, beaten } };
+  return _recs.v;
+}
+const exMetric = e => (e.type === 'charge' ? e.kg : e.type === 'duree' ? e.min : (e.reps || 0) * (e.sets || 1));
+let _gate = { k: '', v: null };
+function rankGate() {
+  const today = todayKey();
+  questIndex();
+  const k = today + '|' + questIndex._k + '|' + state.weights.length + '|' + currentWeight() + '|' + state.startDate;
+  if (_gate.k === k) return _gate.v;
+  const recs = exerciseRecords().beaten;
+  const body = bodyProgress().progress;
+  const v = {};
+  for (const L of ['A', 'S']) {
+    const R = REGLAGES_RANGS[L];
+    let solid = 0;
+    for (let w = 0; w < R.semaines; w++) {
+      let n = 0;
+      for (let d = 1; d <= 7; d++) { const day = addDays(today, -(w * 7 + d)); if (day >= state.startDate && dailyQuest(day).done) n++; }
+      if (n >= R.joursParSemaine) solid++;
+    }
+    v[L] = { ok: solid >= R.semainesSolides && body >= R.corps && recs >= R.records, solid, body, recs, R };
+  }
+  _gate = { k, v };
+  return v;
+}
+function rankGateHtml() {
+  const g = rankGate();
+  const row = (L) => { const x = g[L], R = x.R; return `
+    <div class="gate ${x.ok ? 'ok' : ''}"><b>Rang ${L} ${x.ok ? '✓' : '🔒'}</b>
+      <span>${x.solid >= R.semainesSolides ? '✓' : '·'} Régularité : ${x.solid}/${R.semainesSolides} semaines solides (≥ ${R.joursParSemaine} jours de quête sur ${R.semaines} semaines)</span>
+      <span>${x.body >= R.corps ? '✓' : '·'} Corps : ${Math.round(x.body * 100)} % / ${Math.round(R.corps * 100)} % de l'objectif de poids</span>
+      <span>${x.recs >= R.records ? '✓' : '·'} Records d'exercice battus : ${x.recs}/${R.records}</span></div>`; };
+  return `
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title">Rangs A et S</div><div class="panel-sub">très durs</div></div>
+      <p class="small muted" style="margin:-4px 0 10px">En plus du niveau (A = 50, S = 70), il faut un vrai changement sur plusieurs mois. L'XP des activités est plafonnée à ${REGLAGES_RANGS.xpMaxParJour} par jour : une seule grosse journée ne suffit jamais.</p>
+      ${row('A')}${row('S')}
+    </section>`;
+}
+
+/* =========================================================
+   SPORT : je choisis (ou j'écris) l'exercice, avec la bonne unité
+   ========================================================= */
+function allExercises() {
+  const mine = state.customExercises.map(x => ({ id: 'u' + x.id, nom: x.nom, icone: '⭐', type: x.type, coef: x.coef, standard: 1, mine: true,
+    fort: x.type === 'charge' ? 100 : x.type === 'duree' ? 60 : Math.max(10, Math.round(225 / x.coef)), legendaire: x.type === 'charge' ? 200 : x.type === 'duree' ? 120 : Math.max(30, Math.round(750 / x.coef)) }));
+  return REGLAGES_EXERCICES.concat(mine);
+}
+const TIER_LABEL = { normal: 'Normal', fort: 'Fort 🔥', legendaire: 'LÉGENDAIRE 👑' };
+const TIER_RANK = { normal: 0, fort: 1, legendaire: 2 };
+/* XP = base × coefficient × volume^0,6 (rendement décroissant), seuils d'animation */
+function exCalc(ex, r, bw, best) {
+  const S = REGLAGES_SPORT;
+  let pts, metric, tier = 'normal', mult = 1;
+  if (ex.type === 'charge') {
+    const V = (r.reps || 0) * (r.sets || 0), rel = (r.kg || 0) / bw / (ex.standard || 1);
+    pts = ex.coef * (0.5 + 1.5 * Math.min(2.5, rel)) * V;
+    metric = r.kg || 0;
+    if (metric >= ex.legendaire) tier = 'legendaire'; else if (metric >= ex.fort) tier = 'fort';
+    mult = metric >= 300 ? 1.5 : metric >= 200 ? 1.25 : metric >= 100 ? 1.1 : 1; // 100, 200, 300 kg : chaque palier rapporte plus
+    if (!V) pts = 0;
+  } else if (ex.type === 'duree') {
+    metric = r.min || 0;
+    pts = (ex.coef * metric) / 2;
+    if (metric >= ex.legendaire) tier = 'legendaire'; else if (metric >= ex.fort) tier = 'fort';
+  } else {
+    metric = (r.reps || 0) * (r.sets || 0);
+    pts = ex.coef * metric;
+    if (metric >= ex.legendaire) tier = 'legendaire'; else if (metric >= ex.fort) tier = 'fort';
+  }
+  const rec = best != null && metric > best && metric > 0;
+  if (rec && tier !== 'legendaire') tier = ex.type === 'charge' && metric >= ex.fort ? 'legendaire' : tier === 'normal' ? 'fort' : 'legendaire';
+  const xp = pts > 0 ? Math.min(S.xpMaxExercice, Math.round(S.base * Math.pow(pts, S.puissance) * mult)) : 0;
+  return { pts, xp, tier, rec, metric };
+}
+function openExerciseSheet(activity) {
+  const exs = allExercises();
+  const bw = currentWeight();
+  const recs = exerciseRecords().best;
+  let rows = [], minutes = 0, custom = false;
+  const rowHtml = (r, i) => {
+    const ex = r.ex, c = exCalc(ex, r, bw, recs.has(ex.id) ? recs.get(ex.id) : null);
+    const stp = (f, v, lab, step) => `<div class="exf"><span>${lab}</span><div class="exs"><button type="button" data-exs="${i}:${f}:-${step}">−</button><input inputmode="decimal" data-exi="${i}:${f}" value="${v || ''}" placeholder="0"><button type="button" data-exs="${i}:${f}:${step}">+</button></div></div>`;
+    const fields = ex.type === 'charge' ? stp('kg', r.kg, 'Charge (kg)', 2.5) + stp('sets', r.sets, 'Séries', 1) + stp('reps', r.reps, 'Répétitions', 1)
+      : ex.type === 'duree' ? stp('min', r.min, 'Minutes', 5) : stp('sets', r.sets, 'Séries', 1) + stp('reps', r.reps, 'Répétitions', 1);
+    const vol = ex.type === 'charge' ? `${fmtG(r.kg || 0)} kg = ${fmtG(Math.round(((r.kg || 0) / bw) * 100) / 100)}× ton poids · ${(r.sets || 0) * (r.reps || 0)} répétitions` : ex.type === 'duree' ? `${r.min || 0} min` : `${(r.sets || 0) * (r.reps || 0)} répétitions`;
+    return `<div class="exrow t-${c.tier} enter" style="--i:${i}">
+      <div class="exr-head"><span class="exr-ico">${esc(ex.icone)}</span><b>${esc(ex.nom)}</b><small>×${fmtG(ex.coef)}</small><button type="button" class="fc-x" data-exrm="${i}" aria-label="Retirer">✕</button></div>
+      <div class="exr-fields">${fields}</div>
+      <div class="exr-sum"><span>${vol}</span><span class="exr-tier">${c.rec ? '🏆 RECORD · ' : ''}${TIER_LABEL[c.tier]}</span><b>+${c.xp} XP</b></div>
+    </div>`;
+  };
+  openSheet({
+    tag: '[SYSTÈME] Séance de sport',
+    title: `${activity.icon} Qu'as-tu fait ?`,
+    cls: 'ex-sheet',
+    body: `
+      ${sheetDayHtml()}
+      <div id="ex-rows"></div>
+      <div class="field" style="margin-top:10px"><span>＋ Ajoute tes exercices (plus c'est dur, plus ça rapporte)</span></div>
+      <div class="ex-pick">${exs.map(ex => `<button type="button" class="ex-chip" data-exadd="${esc(ex.id)}"><span>${esc(ex.icone)}</span>${esc(ex.nom)}<small>×${fmtG(ex.coef)}${ex.type === 'charge' ? ' · kg' : ex.type === 'duree' ? ' · min' : ''}</small></button>`).join('')}
+        <button type="button" class="ex-chip add" data-excustom="1"><span>＋</span>Autre exercice<small>je l'écris</small></button></div>
+      <div id="ex-custom"></div>
+      <div class="field" style="margin-top:12px"><span>Durée de la séance</span></div>
+      <div class="ex-durs">${[0, 20, 30, 45, 60, 90, 120].map(m => `<button type="button" class="fchip ${m === 0 ? 'on' : ''}" data-exdur="${m}">${m ? fmtMinutes(m) : '—'}</button>`).join('')}</div>
+      <label class="field" style="margin-top:10px"><span>Note (le Système juge la qualité)</span><input class="input" id="ex-note" maxlength="280" placeholder="Ex : séance intense, record au développé couché"></label>
+      <div class="fs-foot" id="ex-foot"><div id="ex-total"></div><button type="button" class="btn primary block fs-add" data-exsave="1">✓ Valider la séance</button></div>`,
+    onMount(sheet, close) {
+      const draw = () => {
+        $('#ex-rows', sheet).innerHTML = rows.map(rowHtml).join('');
+        const calc = rows.map(r => exCalc(r.ex, r, bw, recs.has(r.ex.id) ? recs.get(r.ex.id) : null));
+        const xp = rows.length ? calc.reduce((s, c) => s + c.xp, 0) + Math.round(minutes * REGLAGES_SPORT.xpParMinute) : minutes ? entryXp(minutes, activity.difficulty) : 0;
+        const top = calc.reduce((t, c) => (TIER_RANK[c.tier] > TIER_RANK[t] ? c.tier : t), 'normal');
+        $('#ex-total', sheet).innerHTML = rows.length || minutes ? `<div class="ftot"><b>+${fmtNum(xp)} XP</b><span>${rows.length} exercice${rows.length > 1 ? 's' : ''}${minutes ? ' · ' + fmtMinutes(minutes) : ''}</span><span class="exr-tier t-${top}">${TIER_LABEL[top]}</span></div>` : '<div class="ftodo">Touche un exercice ou une durée.</div>';
+      };
+      const customForm = () => `
+        <div class="food-form ex-form">
+          <div class="ff-title">[SYSTÈME] Nouvel exercice</div>
+          <label class="field"><span>Nom</span><input class="input" id="exc-nom" maxlength="40" placeholder="Ex : Front lever"></label>
+          <div class="seg" id="exc-type"><button type="button" class="on" data-exct="nombre">Au nombre</button><button type="button" data-exct="charge">En kilos</button><button type="button" data-exct="duree">Durée</button></div>
+          <div class="field" style="margin-top:10px"><span>Difficulté</span></div>
+          <div class="ex-durs" id="exc-coef">${[[1, 'Facile ×1'], [1.5, '×1,5'], [2.5, 'Dur ×2,5'], [4, 'Très dur ×4'], [5, 'Extrême ×5']].map(([c, l], i) => `<button type="button" class="fchip ${i === 1 ? 'on' : ''}" data-excc="${c}">${l}</button>`).join('')}</div>
+          <button type="button" class="btn primary block" style="margin-top:10px" data-excok="1">✓ Ajouter cet exercice</button>
+        </div>`;
+      draw();
+      sheet.addEventListener('click', e => {
+        if (sheetDayClick(sheet, e)) return;
+        const t = e.target;
+        const add = t.closest('[data-exadd]');
+        if (add) { const ex = exs.find(x => x.id === add.dataset.exadd); if (ex) { rows.push({ ex, sets: ex.type === 'duree' ? 0 : 3, reps: ex.type === 'charge' ? 8 : ex.type === 'duree' ? 0 : 10, kg: ex.type === 'charge' ? Math.round(bw * (ex.standard || 1) * 0.5 / 2.5) * 2.5 : 0, min: ex.type === 'duree' ? 30 : 0 }); sfx('tap'); haptic(); draw(); const last = sheet.querySelector('.exrow:last-child'); if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center' }); } return; }
+        if (t.closest('[data-excustom]')) { custom = !custom; $('#ex-custom', sheet).innerHTML = custom ? customForm() : ''; if (custom) $('#exc-nom', sheet).focus(); return; }
+        const ct = t.closest('[data-exct]'); if (ct) { sheet.querySelectorAll('[data-exct]').forEach(b => b.classList.toggle('on', b === ct)); return; }
+        const cc = t.closest('[data-excc]'); if (cc) { sheet.querySelectorAll('[data-excc]').forEach(b => b.classList.toggle('on', b === cc)); return; }
+        if (t.closest('[data-excok]')) {
+          const nom = $('#exc-nom', sheet).value.trim();
+          if (!nom) { toast('Nom manquant', 'Écris le nom de l’exercice.', 'warn'); return; }
+          const x = { id: uid(), nom: nom.slice(0, 40), type: sheet.querySelector('[data-exct].on').dataset.exct, coef: +sheet.querySelector('[data-excc].on').dataset.excc, ts: Date.now(), u: Date.now() };
+          state.customExercises.push(x); save();
+          const ex = allExercises().find(y => y.id === 'u' + x.id);
+          exs.push(ex);
+          rows.push({ ex, sets: ex.type === 'duree' ? 0 : 3, reps: ex.type === 'charge' ? 8 : ex.type === 'duree' ? 0 : 10, kg: ex.type === 'charge' ? 20 : 0, min: ex.type === 'duree' ? 30 : 0 });
+          custom = false; $('#ex-custom', sheet).innerHTML = '';
+          const pick = $('.ex-pick', sheet);
+          pick.insertAdjacentHTML('afterbegin', `<button type="button" class="ex-chip" data-exadd="${esc(ex.id)}"><span>⭐</span>${esc(ex.nom)}<small>×${fmtG(ex.coef)}</small></button>`);
+          toast('Exercice ajouté', `⭐ ${x.nom} est gardé dans ta liste.`);
+          draw(); return;
+        }
+        const st = t.closest('[data-exs]');
+        if (st) { const [i, f, d] = st.dataset.exs.split(':'); const r = rows[+i]; r[f] = Math.max(0, Math.round(((r[f] || 0) + +d) * 10) / 10); haptic(); draw(); return; }
+        const rm = t.closest('[data-exrm]'); if (rm) { rows.splice(+rm.dataset.exrm, 1); draw(); return; }
+        const du = t.closest('[data-exdur]'); if (du) { minutes = +du.dataset.exdur; sheet.querySelectorAll('[data-exdur]').forEach(b => b.classList.toggle('on', b === du)); haptic(); draw(); return; }
+        if (t.closest('[data-exsave]')) {
+          const ok = rows.filter(r => exMetric({ type: r.ex.type, kg: r.kg, min: r.min, reps: r.reps, sets: r.sets }) > 0);
+          if (!ok.length && !minutes) { toast('Rien à valider', 'Ajoute un exercice ou la durée de la séance.', 'warn'); return; }
+          const date = sheetDay(sheet), note = $('#ex-note', sheet).value.trim();
+          close(null);
+          addExerciseLog(activity, ok, minutes, note, date, bw, recs);
+        }
+      });
+      sheet.addEventListener('change', e => {
+        const inp = e.target.closest('[data-exi]');
+        if (!inp) return;
+        const [i, f] = inp.dataset.exi.split(':');
+        const v = parseFloat(inp.value.replace(',', '.'));
+        rows[+i][f] = Number.isFinite(v) && v >= 0 ? Math.min(f === 'kg' ? 1000 : 10000, v) : 0;
+        draw();
+      });
+    },
+  });
+}
+function addExerciseLog(activity, rows, minutes, note, date, bw, recs) {
+  const today = todayKey();
+  const before = levelInfo(totalXp());
+  const statsBefore = computeStats(state.logs, today).values;
+  const ex = rows.map(r => {
+    const c = exCalc(r.ex, r, bw, recs.has(r.ex.id) ? recs.get(r.ex.id) : null);
+    return { id: r.ex.id, nom: r.ex.nom, type: r.ex.type, coef: r.ex.coef, reps: Math.round(r.reps || 0), sets: Math.round(r.sets || 1), kg: r.kg || 0, min: Math.round(r.min || 0), xp: c.xp, tier: c.tier, rec: c.rec, pts: c.pts };
+  });
+  const j = judgeNote(note);
+  let xp = ex.length ? ex.reduce((s, e) => s + e.xp, 0) + Math.round((minutes || 0) * REGLAGES_SPORT.xpParMinute) : entryXp(minutes, activity.difficulty);
+  xp = Math.max(1, Math.round(xp * j.mult));
+  const tier = ex.reduce((t, e) => (TIER_RANK[e.tier] > TIER_RANK[t] ? e.tier : t), 'normal');
+  const pts = ex.length ? ex.reduce((s, e) => s + Math.min(4, e.pts / 100), 0) + (minutes || 0) / RULES.minutesPerPoint : null;
+  const log = {
+    id: uid(), date, ts: Date.now(), activityId: activity.id, name: ex.length === 1 ? `Sport · ${ex[0].nom}` : ex.length ? 'Séance de sport' : activity.name, icon: activity.icon,
+    minutes: minutes || null, note: note.slice(0, 280), stats: [...activity.stats], difficulty: activity.difficulty, xp, quality: j.mult, verdict: j.verdict,
+    ex: ex.map(({ pts: _p, ...e }) => e), tier,
+  };
+  if (pts != null) log.pts = Math.min(50, pts);
+  ui.lastLogId = log.id;
+  const qBefore = dailyQuest(date);
+  const pg0 = qBefore.goals.find(g => g.key === 'pushups');
+  snapshotForAnim();
+  state.logs.push(log);
+  save();
+  const qAfter = dailyQuest(date);
+  const pg1 = qAfter.goals.find(g => g.key === 'pushups');
+  ui.justDone = date !== todayView() ? [] : qAfter.goals.filter(g => g.done && !(qBefore.goals.find(x => x.key === g.key) || {}).done).map(g => g.key);
+  render();
+  ui.justDone = [];
+  const statsAfter = computeStats(state.logs, today).values;
+  const gains = STAT_KEYS.map(k => ({ k, d: statsAfter[k] - statsBefore[k] })).filter(g => g.d >= 0.01).map(g => `${statByKey[g.k].name} +${g.d.toFixed(2).replace('.', ',')}`);
+  const recsTxt = ex.filter(e => e.rec).map(e => `🏆 Record : ${e.nom}`);
+  const capped = dayPosXp(date) > REGLAGES_RANGS.xpMaxParJour;
+  const lines = [...recsTxt, ...(j.verdict ? ['Jugement du Système : ' + j.verdict] : []), ...(capped ? [`Plafond du jour atteint (${REGLAGES_RANGS.xpMaxParJour} XP) : le reste ne compte pas pour le niveau.`] : [])];
+  let anim;
+  if (tier === 'legendaire') {
+    sfx('legend'); haptic(3);
+    anim = celebrate({ kind: 'legend', title: 'EXPLOIT LÉGENDAIRE', icon: '👑', big: `+${xp} XP`, count: xp, sub: exDetail(log), chips: gains, lines });
+  } else if (tier === 'fort') {
+    sfx('fort'); haptic(2);
+    anim = flyXp(ui.tapRect, xp).then(() => celebrate({ kind: 'win', title: 'SÉANCE PUISSANTE', icon: '🔥', big: `+${xp} XP`, count: xp, sub: exDetail(log), chips: gains, lines }));
+  } else {
+    sfx('success'); haptic();
+    anim = flyXp(ui.tapRect, xp).then(() => toast(`Séance validée · +${xp} XP`, lines[0] || exDetail(log)));
+  }
+  anim.then(() => questCompletedCheck(qBefore.done, date)).then(() => {
+    if (pg0 && pg1 && pg0.cur < 1000 && pg1.cur >= 1000) openPushupPage(date);
+    const lvNow = levelInfo(totalXp());
+    if (lvNow.level > before.level) { const rb = rankFor(before.level), ra = rankFor(lvNow.level); showLevelUp(lvNow.level, ra.letter !== rb.letter ? ra : null); }
+  });
+}
+
+/* =========================================================
+   MALBOUFFE : enseigne → produit → extras, calories, dessin animé
+   ========================================================= */
+const JUNK_ART = {
+  burger: `<svg viewBox="0 0 48 48"><path d="M6 20 C6 8 42 8 42 20 Z" fill="#f2a53a" stroke="#7a3d0a" stroke-width="1.5"/><circle cx="16" cy="14" r="1" fill="#fff6d6"/><circle cx="24" cy="12" r="1" fill="#fff6d6"/><circle cx="31" cy="15" r="1" fill="#fff6d6"/><path d="M5 21 Q12 26 18 21 Q24 26 30 21 Q36 26 43 21 L43 24 L5 24 Z" fill="#5fd35a"/><rect x="5" y="24" width="38" height="6" rx="3" fill="#7a3d1a"/><path d="M6 30 L42 30 L38 34 L10 34 Z" fill="#ffd23f"/><path d="M6 35 L42 35 C42 41 6 41 6 35 Z" fill="#e8962e" stroke="#7a3d0a" stroke-width="1.5"/></svg>`,
+  frites: `<svg viewBox="0 0 48 48"><g fill="#ffd23f" stroke="#b07a00" stroke-width="1"><rect x="14" y="6" width="4" height="22" rx="1"/><rect x="19" y="3" width="4" height="25" rx="1"/><rect x="24" y="5" width="4" height="23" rx="1"/><rect x="29" y="8" width="4" height="20" rx="1"/><rect x="34" y="10" width="3.5" height="18" rx="1"/></g><path d="M10 20 L38 20 L35 44 L13 44 Z" fill="#e4002b" stroke="#7a0016" stroke-width="1.5"/><path d="M18 30 Q24 36 30 30" stroke="#ffd23f" stroke-width="2.5" fill="none"/></svg>`,
+  boisson: `<svg viewBox="0 0 48 48"><path d="M27 2 L31 2 L28 12" stroke="#fff" stroke-width="2" fill="none"/><path d="M12 12 L36 12 L32 45 L16 45 Z" fill="#e4002b" stroke="#7a0016" stroke-width="1.5"/><rect x="10" y="9" width="28" height="5" rx="2" fill="#f4f4f4"/><path d="M15 24 Q24 30 34 22" stroke="#fff" stroke-width="2" fill="none"/></svg>`,
+  nuggets: `<svg viewBox="0 0 48 48"><path d="M6 26 L42 26 L38 44 L10 44 Z" fill="#ffc72c" stroke="#9a6a00" stroke-width="1.5"/><g fill="#e6a03c" stroke="#8a4f0a" stroke-width="1.3"><ellipse cx="15" cy="22" rx="7" ry="5.5"/><ellipse cx="28" cy="19" rx="8" ry="6"/><ellipse cx="37" cy="24" rx="6" ry="5"/></g></svg>`,
+  kebab: `<svg viewBox="0 0 48 48"><path d="M8 40 L24 4 L40 40 Z" fill="#f3d7a1" stroke="#9a6a2a" stroke-width="1.5"/><path d="M14 30 L24 10 L34 30 Z" fill="#9a4f1f"/><path d="M13 32 Q24 26 35 32" stroke="#5fd35a" stroke-width="3" fill="none"/><path d="M15 36 Q24 31 33 36" stroke="#e8402e" stroke-width="2.5" fill="none"/><path d="M14 40 Q24 36 34 40" stroke="#fff" stroke-width="2" fill="none"/></svg>`,
+  wrap: `<svg viewBox="0 0 48 48"><rect x="6" y="14" width="36" height="22" rx="11" fill="#f3d7a1" stroke="#9a6a2a" stroke-width="1.5"/><path d="M36 16 C46 20 46 30 36 34" fill="#9a4f1f"/><path d="M38 20 Q42 25 38 30" stroke="#5fd35a" stroke-width="2.5" fill="none"/><path d="M12 25 L30 25" stroke="#d6b27a" stroke-width="1.5"/></svg>`,
+  pizza: `<svg viewBox="0 0 48 48"><path d="M24 44 L4 8 Q24 0 44 8 Z" fill="#ffcf5a" stroke="#a0640a" stroke-width="1.5"/><path d="M6 10 Q24 3 42 10" stroke="#d9822b" stroke-width="4" fill="none"/><g fill="#d62f2f"><circle cx="18" cy="16" r="3.5"/><circle cx="29" cy="15" r="3.5"/><circle cx="24" cy="27" r="3.5"/></g></svg>`,
+  sauce: `<svg viewBox="0 0 48 48"><rect x="10" y="14" width="28" height="24" rx="4" fill="#f4f4f4" stroke="#999" stroke-width="1.5"/><path d="M12 18 L36 18 L36 24 Q24 30 12 24 Z" fill="#e8402e"/></svg>`,
+  dessert: `<svg viewBox="0 0 48 48"><path d="M12 22 L36 22 L32 44 L16 44 Z" fill="#f4f4f4" stroke="#999" stroke-width="1.5"/><path d="M10 22 C10 8 38 8 38 22 Z" fill="#fff7e6" stroke="#c9a46a" stroke-width="1.5"/><path d="M14 16 Q24 22 34 14" stroke="#7a3d1a" stroke-width="3" fill="none"/><circle cx="24" cy="7" r="3" fill="#e4002b"/></svg>`,
+};
+const junkArt = d => `<span class="jart j-${esc(d)}">${JUNK_ART[d] || JUNK_ART.burger}</span>`;
+function junkProducts(e) {
+  const mine = state.customJunk.filter(x => x.e === e).map(x => ({ e, nom: x.nom, kcal: x.kcal, dessin: 'burger', src: 'mon produit', mine: x.id }));
+  return MALBOUFFE_PRODUITS.filter(p => p.e === e && !mine.some(m => normTxt(m.nom) === normTxt(p.nom))).concat(mine);
+}
+function openJunkSheet(activity) {
+  let en = 'mcdo';
+  const picks = new Map();   // "e|nom" → { p, q }
+  const extras = new Map();  // extra id → index de taille
+  let addMeal = true, form = false;
+  const ens = id => MALBOUFFE_ENSEIGNES.find(x => x.id === id) || MALBOUFFE_ENSEIGNES[MALBOUFFE_ENSEIGNES.length - 1];
+  const items = () => [...[...picks.values()].map(x => ({ nom: x.p.nom, kcal: x.p.kcal, q: x.q, dessin: x.p.dessin, src: x.p.src, e: x.p.e })),
+    ...[...extras.entries()].map(([id, i]) => { const x = MALBOUFFE_EXTRAS.find(y => y.id === id); const t = x.tailles[i]; return { nom: `${x.nom}${x.tailles.length > 1 ? ' ' + t.t.toLowerCase() : ''}`, kcal: t.kcal, q: 1, dessin: x.dessin, src: t.src }; })];
+  openSheet({
+    tag: '[SYSTÈME] Malbouffe',
+    title: `${activity.icon} Qu'as-tu mangé ?`,
+    cls: 'junk-sheet',
+    body: `${sheetDayHtml()}
+      <div class="j-ens" id="j-ens"></div>
+      <div id="j-prods"></div>
+      <div class="field" style="margin-top:12px"><span>Extras (touche la taille)</span></div>
+      <div id="j-extras"></div>
+      <div id="j-form"></div>
+      <div id="j-stage"></div>
+      <label class="j-meal"><input type="checkbox" id="j-addmeal" checked> Ajouter aussi les calories à mes repas</label>
+      <p class="small faint">✓ officiel = infos nutritionnelles de l'enseigne (sites France) · ≈ estimation = pas de valeur officielle trouvée. Les valeurs sont dans le fichier de réglages, et tu peux ajouter tes produits.</p>
+      <div class="fs-foot"><div id="j-total"></div><button type="button" class="btn danger block fs-add" data-jsave="1">Valider (le Système retire de l'XP)</button></div>`,
+    onMount(sheet, close) {
+      const draw = () => {
+        $('#j-ens', sheet).innerHTML = MALBOUFFE_ENSEIGNES.map(x => `<button type="button" class="j-en ${x.id === en ? 'on' : ''}" style="--bc:${x.couleur}" data-jen="${x.id}">${esc(x.nom)}</button>`).join('');
+        $('#j-prods', sheet).innerHTML = `<div class="j-grid">${junkProducts(en).map((p, i) => { const k = p.e + '|' + p.nom, q = picks.has(k) ? picks.get(k).q : 0; return `
+          <button type="button" class="jtile ${q ? 'on' : ''}" data-jp="${i}">${junkArt(p.dessin)}<b>${esc(p.nom)}</b><small>${fmtNum(p.kcal)} kcal</small><em class="${!/estimation/.test(p.src) && !p.mine ? 'off' : ''}">${/estimation/.test(p.src) ? '≈ estimation' : p.mine ? '⭐ mon produit' : /calculé/.test(p.src) ? '✓ calculé' : '✓ officiel'}</em>${q ? `<span class="jq">×${q}</span><span class="jm" data-jm="${i}">−</span>` : ''}</button>`; }).join('')}
+          <button type="button" class="jtile add" data-jform="1"><span class="jart">＋</span><b>Mon produit</b><small>nom + kcal</small></button></div>`;
+        $('#j-extras', sheet).innerHTML = MALBOUFFE_EXTRAS.map(x => `<div class="j-ex">${junkArt(x.dessin)}<b>${esc(x.nom)}</b><div class="j-sizes">${x.tailles.map((t, i) => `<button type="button" class="fchip ${extras.get(x.id) === i ? 'on' : ''}" data-jx="${x.id}:${i}">${esc(t.t)}<small>${t.kcal} kcal</small></button>`).join('')}</div></div>`).join('');
+        const its = items(), kcal = its.reduce((s, x) => s + x.kcal * x.q, 0), loss = Math.round(kcal / REGLAGES_MAL.malbouffeKcalParXp);
+        const firstEn = [...picks.values()][0];
+        $('#j-stage', sheet).innerHTML = its.length ? `<div class="j-stage"><div class="j-en-name">${esc(ens(firstEn ? firstEn.p.e : en).nom)}</div><div class="j-prod-name">${esc(its.map(x => (x.q > 1 ? x.q + '× ' : '') + x.nom).join(' + '))}</div><div class="j-arts">${its.slice(0, 6).map((x, i) => `<span style="--i:${i}">${junkArt(x.dessin)}</span>`).join('')}</div></div>` : '';
+        $('#j-total', sheet).innerHTML = its.length ? `<div class="ftot"><b>${fmtNum(kcal)} kcal</b><span class="trend-down">−${fmtNum(loss)} XP</span></div>` : '<div class="ftodo">Choisis l’enseigne puis ce que tu as mangé.</div>';
+      };
+      draw();
+      $('#j-addmeal', sheet).addEventListener('change', e => { addMeal = e.target.checked; });
+      sheet.addEventListener('click', e => {
+        if (sheetDayClick(sheet, e)) return;
+        const t = e.target;
+        const eb = t.closest('[data-jen]'); if (eb) { en = eb.dataset.jen; haptic(); draw(); return; }
+        const jm = t.closest('[data-jm]');
+        if (jm) { e.stopPropagation(); const p = junkProducts(en)[+jm.dataset.jm], k = p.e + '|' + p.nom; const x = picks.get(k); if (x) { x.q--; if (x.q <= 0) picks.delete(k); } haptic(); draw(); return; }
+        const jp = t.closest('[data-jp]');
+        if (jp) { const p = junkProducts(en)[+jp.dataset.jp], k = p.e + '|' + p.nom; const x = picks.get(k) || { p, q: 0 }; x.q = Math.min(20, x.q + 1); picks.set(k, x); sfx('tap'); haptic(); draw(); return; }
+        const jx = t.closest('[data-jx]');
+        if (jx) { const [id, i] = jx.dataset.jx.split(':'); if (extras.get(id) === +i) extras.delete(id); else extras.set(id, +i); haptic(); draw(); return; }
+        if (t.closest('[data-jform]')) {
+          form = !form;
+          $('#j-form', sheet).innerHTML = form ? `<div class="food-form"><div class="ff-title">[SYSTÈME] Mon produit · ${esc(ens(en).nom)}</div>
+            <div class="ff-grid"><label><span>Nom</span><input class="input" id="jf-nom" maxlength="50"></label><label><span>Calories (kcal)</span><input class="input" id="jf-kcal" inputmode="numeric"></label></div>
+            <button type="button" class="btn primary block" data-jfok="1">✓ Ajouter</button><p class="small faint" style="margin:6px 0 0">Même nom qu'un produit de la liste = tu remplaces sa valeur.</p></div>` : '';
+          return;
+        }
+        if (t.closest('[data-jfok]')) {
+          const nom = $('#jf-nom', sheet).value.trim(), kcal = parseInt($('#jf-kcal', sheet).value, 10);
+          if (!nom || !(kcal > 0 && kcal <= 5000)) { toast('Produit incomplet', 'Écris le nom et les calories.', 'warn'); return; }
+          state.customJunk.filter(x => x.e === en && normTxt(x.nom) === normTxt(nom)).forEach(x => tomb(x.id));
+          state.customJunk = state.customJunk.filter(x => !(x.e === en && normTxt(x.nom) === normTxt(nom))).concat({ id: uid(), e: en, nom: nom.slice(0, 50), kcal, ts: Date.now(), u: Date.now() });
+          save(); form = false; $('#j-form', sheet).innerHTML = '';
+          toast('Produit ajouté', `${nom} · ${kcal} kcal`); draw(); return;
+        }
+        if (t.closest('[data-jsave]')) {
+          const its = items();
+          if (!its.length) { toast('Rien à valider', 'Touche ce que tu as mangé.', 'warn'); return; }
+          const kcal = its.reduce((s, x) => s + x.kcal * x.q, 0);
+          const firstP = [...picks.values()][0];
+          const enO = ens(firstP ? firstP.p.e : en);
+          const main = firstP ? firstP.p : null;
+          const date = sheetDay(sheet);
+          const extra = {
+            kind: 'food', name: `${enO.nom} · ${main ? main.nom : its[0].nom}${its.length > 1 ? ' +' + (its.length - 1) : ''}`.slice(0, 60),
+            xp: -Math.max(1, Math.round(kcal / REGLAGES_MAL.malbouffeKcalParXp)), pts: Math.min(20, kcal / 500),
+            junk: { e: enO.id, en: enO.nom, dessin: main ? main.dessin : its[0].dessin, kcal, items: its.map(x => ({ nom: x.nom, kcal: x.kcal, q: x.q, dessin: x.dessin })) },
+          };
+          if (addMeal) {
+            const meal = date === todayKey() ? guessMeal() : 'midi';
+            its.forEach((x, k) => { const kc = x.kcal * x.q; state.meals.push({ id: uid(), date, meal, ts: Date.now() + k, name: `${enO.nom} · ${x.q > 1 ? x.q + '× ' : ''}${x.nom}`.slice(0, 120), grams: 0, kcal: kc, p: Math.round((kc * 0.15) / 4), g: Math.round((kc * 0.45) / 4), l: Math.round((kc * 0.4) / 9), src: 'fastfood' }); });
+          }
+          close(null);
+          addBadLog(activity, null, '', date, extra);
+        }
+      });
+    },
+  });
+}
+
+/* =========================================================
+   SE COUCHER TARD : heure de coucher conseillée = lever − 8 h
+   ========================================================= */
+function sleepCalc(bed, wake, habit) {
+  const rec = hmToMin(habit) - REGLAGES_MAL.sommeilHeures * 60;
+  const noon = m => (((m - 720) % 1440) + 1440) % 1440; // minutes depuis midi (gère minuit)
+  const delay = noon(hmToMin(bed)) - noon(rec);
+  let dur = (hmToMin(wake) - hmToMin(bed) + 1440) % 1440;
+  if (!dur) dur = 1440;
+  const d = delay - REGLAGES_MAL.sommeilToleranceMin;
+  const loss = d > 0 ? Math.min(250, Math.round(0.4 * d + 15 * Math.pow(d / 60, 2))) : 0;
+  return { rec: minToHm(rec), delay, dur, loss, pts: d > 0 ? Math.min(10, d / 60) : 0 };
+}
+function openSleepSheet(activity) {
+  const habit = state.body.wakeTime || '07:30';
+  const h = new Date().getHours();
+  openSheet({
+    tag: '[SYSTÈME] Sommeil',
+    title: `${activity.icon} Couché tard ?`,
+    body: `${sheetDayHtml(h < 15)}
+      <div class="sleep-info">😴 Un adulte a besoin d'environ <b>7 à 9 h de sommeil</b>. « Tard » = après l'heure conseillée : ton lever habituel − 8 h.</div>
+      <div class="ff-grid">
+        <label><span>Lever habituel</span><input class="input" type="time" id="sl-habit" value="${habit}"></label>
+        <label><span>Coucher conseillé</span><input class="input" id="sl-rec" disabled></label>
+        <label><span>Je me suis couché à</span><input class="input" type="time" id="sl-bed" value="00:30"></label>
+        <label><span>Je me suis levé à</span><input class="input" type="time" id="sl-wake" value="${habit}"></label>
+      </div>
+      <div id="sl-res"></div>
+      <div class="fs-foot"><button type="button" class="btn danger block fs-add" data-slsave="1">Valider</button></div>`,
+    onMount(sheet, close) {
+      const upd = () => {
+        const c = sleepCalc($('#sl-bed', sheet).value, $('#sl-wake', sheet).value, $('#sl-habit', sheet).value);
+        $('#sl-rec', sheet).value = c.rec.replace(':', ' h ');
+        $('#sl-res', sheet).innerHTML = `<div class="sleep-res ${c.loss ? 'bad' : 'ok'}">
+          <div><span>Sommeil</span><b>${fmtMinutes(c.dur)}</b><small>${c.dur < 420 ? 'moins de 7 h' : c.dur > 540 ? 'plus de 9 h' : 'dans les 7-9 h'}</small></div>
+          <div><span>Retard</span><b>${c.delay > 0 ? fmtMinutes(c.delay) : 'aucun'}</b><small>tolérance ${REGLAGES_MAL.sommeilToleranceMin} min</small></div>
+          <div><span>Perte</span><b>${c.loss ? '−' + c.loss + ' XP' : '0 XP'}</b><small>${c.loss ? 'de plus en plus fort' : 'à l’heure ✓'}</small></div></div>`;
+      };
+      upd();
+      sheet.addEventListener('input', upd);
+      $('#sl-habit', sheet).addEventListener('change', e => { if (/^\d{2}:\d{2}$/.test(e.target.value)) { state.body.wakeTime = e.target.value; touchSettings(); save(); } });
+      sheet.addEventListener('click', e => {
+        if (sheetDayClick(sheet, e)) return;
+        if (!e.target.closest('[data-slsave]')) return;
+        const bed = $('#sl-bed', sheet).value, wake = $('#sl-wake', sheet).value;
+        if (!bed || !wake) { toast('Heures manquantes', 'Indique l’heure de coucher et de lever.', 'warn'); return; }
+        const c = sleepCalc(bed, wake, $('#sl-habit', sheet).value);
+        const date = sheetDay(sheet);
+        close(null);
+        addBadLog(activity, null, '', date, { kind: 'sleep', xp: -c.loss, pts: c.pts, sleep: { bed, wake, dur: c.dur, delay: c.delay } });
+      });
+    },
+  });
+}
+
+/* =========================================================
+   ALCOOL : au nombre de verres
+   ========================================================= */
+const alcoholLoss = n => { let s = 0; for (let i = 0; i < n; i++) s += REGLAGES_MAL.alcoolXpParVerre + REGLAGES_MAL.alcoolXpEnPlus * i; return s; };
+function openAlcoholSheet(activity) {
+  let n = 1;
+  openSheet({
+    tag: '[SYSTÈME] Alcool',
+    title: `${activity.icon} Combien de verres ?`,
+    body: `${sheetDayHtml(new Date().getHours() < 15)}
+      <div class="alc-box"><button type="button" class="fq-btn" data-alc="-1">−</button><div class="alc-n"><b id="alc-n">1</b><span>verre</span></div><button type="button" class="fq-btn" data-alc="1">+</button></div>
+      <div class="alc-glasses" id="alc-g"></div>
+      <div class="ftot" id="alc-loss"></div>
+      <div class="fs-foot"><button type="button" class="btn danger block fs-add" data-alcsave="1">Valider</button></div>`,
+    onMount(sheet, close) {
+      const upd = () => {
+        $('#alc-n', sheet).textContent = n;
+        $('#alc-n', sheet).nextElementSibling.textContent = n > 1 ? 'verres' : 'verre';
+        $('#alc-g', sheet).innerHTML = Array.from({ length: Math.min(n, 15) }, (_, i) => `<span style="--i:${i}">🍺</span>`).join('');
+        $('#alc-loss', sheet).innerHTML = `<b class="trend-down">−${alcoholLoss(n)} XP</b><span>chaque verre coûte un peu plus que le précédent</span>`;
+      };
+      upd();
+      sheet.addEventListener('click', e => {
+        if (sheetDayClick(sheet, e)) return;
+        const b = e.target.closest('[data-alc]');
+        if (b) { n = Math.max(1, Math.min(30, n + +b.dataset.alc)); haptic(); upd(); return; }
+        if (!e.target.closest('[data-alcsave]')) return;
+        const date = sheetDay(sheet);
+        close(null);
+        addBadLog(activity, null, '', date, { kind: 'alcohol', xp: -alcoholLoss(n), pts: Math.min(15, n * 0.5), glasses: n });
+      });
+    },
+  });
+}
+
+/* ---------- Démarrage : musique, palier, couleur ---------- */
+function initSurpass() {
+  if (typeof Musique === 'undefined') return;
+  Musique.setVolume(prefs.musicVol != null ? prefs.musicVol : 0.5);
+  Musique.setEnabled(prefs.music !== false);
+  const unlock = () => Musique.unlock();
+  ['pointerdown', 'touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, unlock, { passive: true }));
+  document.addEventListener('visibilitychange', () => (document.hidden ? Musique.pause() : Musique.resume()));
+  const mb = $('#music-btn'), ms = $('#music-set');
+  if (mb) mb.addEventListener('click', e => { e.stopPropagation(); toggleMusic(); });
+  if (ms) ms.addEventListener('click', e => { e.stopPropagation(); Musique.unlock(); openMusicPanel(); });
+  document.addEventListener('input', e => { if (e.target.dataset && e.target.dataset.musvol) { prefs.musicVol = +e.target.value / 100; savePrefs(); Musique.unlock(); Musique.setVolume(prefs.musicVol); } });
+  applyTier();
+  setProgTheme();
+}
+
+/* =========================================================
    Événements (un seul écouteur pour toute l'app)
    ========================================================= */
 document.addEventListener('click', e => {
@@ -3671,7 +4569,8 @@ document.addEventListener('click', e => {
     ui.tapRect = act.getBoundingClientRect();
     sfx('tap'); haptic();
     const a = state.activities.find(x => x.id === act.dataset.logActivity);
-    if (a) openLogSheet(a);
+    if (a && a.id === 'sport') openExerciseSheet(a);
+    else if (a) openLogSheet(a);
     return;
   }
   const repBtn = t.closest('#view [data-reps]');
@@ -3687,10 +4586,16 @@ document.addEventListener('click', e => {
       sfx('tap');
     } else {
       state.reps.push({ id: uid(), date: today, ts: Date.now(), n: +repBtn.dataset.reps });
-      sfx('tap'); haptic();
+      haptic();
     }
     save();
     const q = dailyQuest(today);
+    const pg0 = qWas.goals.find(g => g.key === 'pushups'), pg1 = q.goals.find(g => g.key === 'pushups');
+    if (pg0 && pg1 && repBtn.dataset.reps !== 'undo') questSound(goalRatio(pg0), goalRatio(pg1));
+    const hit1000 = pg0 && pg1 && pg0.cur < 1000 && pg1.cur >= 1000;
+    if (hit1000) setTimeout(() => openPushupPage(today), 900);
+    else if (pg0 && pg1 && [600, 700, 800].some(n => pg0.cur < n && pg1.cur >= n)) toast(pg1.cur >= 800 ? 'Bras légendaire' : pg1.cur >= 700 ? 'Nouveau bras débloqué' : 'Bras d’alien débloqué', `${pg1.cur} pompes : ton bras évolue.`);
+    applyTier();
     const nowDone = (q.goals.find(g => g.key === 'pushups') || {}).done;
     if (q.done && !qWas.done) { snapshotForAnim(); ui.justDone = ['pushups']; render(); ui.justDone = []; questCompletedCheck(false, today); return; }
     // mise à jour de la seule fenêtre de quête (pas de ré-animation de tout l'écran)
@@ -3700,7 +4605,18 @@ document.addEventListener('click', e => {
     ui.justDone = [];
     const nu = wrap.querySelector('.quest-win'), old = $('#view .quest-win');
     if (nu && old) { nu.classList.add('no-open'); old.replaceWith(nu); }
-    if (!wasDone && nowDone) { sfx('success'); haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes ${today < todayKey() ? 'le ' + fmtDayShort(today) : "aujourd'hui"}. Objectif atteint.`); }
+    if (!wasDone && nowDone) { haptic(2); toast('Pompes terminées', `${q.goals.find(g => g.key === 'pushups').cur} pompes ${today < todayKey() ? 'le ' + fmtDayShort(today) : "aujourd'hui"}. Objectif atteint.`); }
+    return;
+  }
+  const dcx = t.closest('#view [data-del-cex], #view [data-del-cjunk]');
+  if (dcx) {
+    const isEx = !!dcx.dataset.delCex, id = dcx.dataset.delCex || dcx.dataset.delCjunk;
+    confirmBox('Supprimer ?', 'Il ne sera plus proposé. Ce qui est déjà noté ne change pas.', 'Supprimer', true).then(ok => {
+      if (!ok) return;
+      tomb(id);
+      if (isEx) state.customExercises = state.customExercises.filter(x => x.id !== id); else state.customJunk = state.customJunk.filter(x => x.id !== id);
+      save(); render();
+    });
     return;
   }
   const dcf = t.closest('#view [data-del-cfood]');
@@ -3714,7 +4630,7 @@ document.addEventListener('click', e => {
     const a = state.badActivities.find(x => x.id === lb.dataset.logBad);
     ui.tapRect = lb.getBoundingClientRect();
     sfx('tap'); haptic();
-    if (a) openLogSheet(a, true);
+    if (a) { const k = badKind(a); if (k === 'food') openJunkSheet(a); else if (k === 'sleep') openSleepSheet(a); else if (k === 'alcohol') openAlcoholSheet(a); else openLogSheet(a, true); }
     return;
   }
   if (t.closest('#view [data-new-bad]')) return openActivityEditor(null, true);
@@ -3848,7 +4764,12 @@ document.addEventListener('change', e => {
   if (e.target.dataset && e.target.dataset.pref) {
     prefs[e.target.dataset.pref] = e.target.checked;
     savePrefs();
+    if (e.target.dataset.pref === 'music') { Musique.unlock(); Musique.setEnabled(prefs.music); updateMusicBtn(); }
     if (e.target.checked) { sfx('success'); haptic(); }
+    return;
+  }
+  if (e.target.dataset && e.target.dataset.wake) {
+    if (/^\d{2}:\d{2}$/.test(e.target.value)) { state.body.wakeTime = e.target.value; touchSettings(); save(); render(); toast('Heure de lever enregistrée', `Coucher conseillé : ${fmtHm(minToHm(hmToMin(e.target.value) - REGLAGES_MAL.sommeilHeures * 60))}`); }
     return;
   }
   if (e.target.dataset && e.target.dataset.quest) {
@@ -3927,7 +4848,7 @@ function mergeStates(a, b, preferB = false) {
     const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
     const out = JSON.parse(JSON.stringify(newer));
     // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
-    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps', 'customFoods']) {
+    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps', 'customFoods', 'customExercises', 'customJunk']) {
       const ids = new Set(out[k].map(x => x.id));
       out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
     }
@@ -3972,6 +4893,8 @@ function mergeStates(a, b, preferB = false) {
     bilans: oneByDate(union(a.bilans || [], b.bilans || [])),
     reps: union(a.reps || [], b.reps || []),
     customFoods: union(a.customFoods || [], b.customFoods || []),
+    customExercises: union(a.customExercises || [], b.customExercises || []),
+    customJunk: union(a.customJunk || [], b.customJunk || []),
   };
 }
 
@@ -4140,6 +5063,7 @@ function scanSweep() {
 async function start() {
   buildParticles();
   $('#app-version').textContent = APP_VERSION;
+  initSurpass();
   if (!localStorage.getItem(STORAGE_KEY)) save();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   render();

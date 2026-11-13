@@ -17,7 +17,7 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
 
-  <link rel="stylesheet" href="style.css?v=2.5.0">
+  <link rel="stylesheet" href="style.css?v=3.0.0">
 </head>
 <body>
   <!-- fond : particules lumineuses + balayage "hologramme" -->
@@ -27,6 +27,10 @@
     <header class="topbar">
       <div class="topbar-tag"><button type="button" id="day0-btn" class="day0-btn" aria-label="Voir le jour 0">0</button>[SYSTÈME]</div>
       <div class="topbar-title" id="topbar-title">Statut du joueur</div>
+      <div class="music-ctl">
+        <button type="button" id="music-btn" class="music-btn" aria-label="Couper la musique">🔊</button>
+        <button type="button" id="music-set" class="music-set" aria-label="Réglages de la musique">P0</button>
+      </div>
       <span id="sync-dot" class="sync-dot s-off" aria-hidden="true"></span>
     </header>
 
@@ -68,7 +72,9 @@
   <!-- choix de photos (galerie ou appareil photo) -->
   <input type="file" id="photo-file" accept="image/*" multiple hidden>
 
-  <script src="app.js?v=2.5.0"></script>
-  <script type="module" src="holo.js?v=2.5.0"></script>
+  <script src="reglages.js?v=3.0.0"></script>
+  <script src="musique.js?v=3.0.0"></script>
+  <script src="app.js?v=3.0.0"></script>
+  <script type="module" src="holo.js?v=3.0.0"></script>
 </body>
 </html>

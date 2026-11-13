@@ -11,6 +11,13 @@ bilan mensuel, historique, sauvegarde JSON.
 v2.4 : repas en langage naturel (« un grec frites et un coca »), choix en cases à toucher,
 catalogue des protéines de marque (InShape, MyProtein, Prozis, Nutrimuscle…), aliments
 inconnus classés d'un geste et retenus dans « Mes aliments ».
+v3.0 : surpassement « dopaminant » — 7 paliers de musique chiptune originale (CC0, générée
+en direct) et de lumière jusqu'au mode ULTIME, sons de jeu par quart d'objectif, pompes qui
+brillent (bras 600/700/800, page 1 000), sport par exercice (unités, coefficients, animations
+normal/fort/légendaire), mauvaises habitudes plus justes (écrans ×0,5 après 20 h, malbouffe par
+produit avec calories sourcées, coucher tard, alcool en verres), ronds de stats en couleur,
+graphiques Jour/Semaine/Mois/Année avec bulle au doigt, rangs A et S gardés (plafond d'XP par
+jour + régularité sur des semaines). Tous les réglages sont dans `reglages.js`.
 
 PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 (Safari → Partager → « Sur l'écran d'accueil ») et utilisable hors connexion.
@@ -21,6 +28,8 @@ PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 |---|---|
 | `index.html` | Structure de la page |
 | `style.css` | Apparence (couleurs en haut du fichier) |
+| `reglages.js` | Réglages modifiables : rangs, paliers, exercices, pertes d'XP, fast-foods (avec sources) |
+| `musique.js` | Musique du Système (7 boucles chiptune originales, CC0) |
 | `app.js` | Toute la logique : règles des stats (`RULES`), activités par défaut, écrans |
 | `holo.js` | Hologramme 3D du corps (three.js) : rotation, rayures, affinage vers l'objectif |
 | `assets/corps.bin` | Modèle 3D du corps (format compact), ajusté aux photos |
