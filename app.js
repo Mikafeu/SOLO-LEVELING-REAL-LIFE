@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.1.0';
+const APP_VERSION = '3.2.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -78,7 +78,11 @@ const DEFAULT_ACTIVITIES = [
   { id: 'sport', name: 'Sport', icon: '🏋️', stats: ['physique', 'discipline'], difficulty: 'normal' },
   { id: 'travail', name: 'Travail', icon: '💼', stats: ['discipline', 'physique'], difficulty: 'normal' },
   { id: 'lecture', name: 'Apprentissage / lecture', icon: '📚', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
+  { id: 'youtube', name: 'Vidéo YouTube (je crée)', icon: '▶️', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
+  { id: 'videos', name: 'Mes vidéos (création)', icon: '🎬', stats: ['intelligence', 'concentration'], difficulty: 'normal' },
 ];
+/* activités ajoutées après coup : proposées aussi aux anciennes sauvegardes (sauf si supprimées) */
+const ADDED_ACTIVITIES = ['youtube', 'videos'];
 
 /* Types de « mal fait » : écrans (durée + heure), malbouffe (ce que j'ai mangé),
    coucher tard (heures), alcool (verres), temps perdu (durée) */
@@ -178,6 +182,9 @@ function sanitizeState(raw) {
       difficulty: DIFFICULTIES.some(d => d.key === a.difficulty) ? a.difficulty : 'normal',
       u: Number.isFinite(a.u) ? a.u : 0,
     }));
+  for (const id of ADDED_ACTIVITIES) {
+    if (!s.activities.some(a => a.id === id) && !s.tombstones[id]) { const d = DEFAULT_ACTIVITIES.find(a => a.id === id); s.activities.push({ ...d, stats: [...d.stats], u: 0 }); }
+  }
   if (Array.isArray(raw.badActivities)) {
     s.badActivities = raw.badActivities.filter(a => a && typeof a.name === 'string').map(a => ({
       id: typeof a.id === 'string' && a.id ? a.id : uid(), name: a.name.slice(0, 40),
@@ -2573,6 +2580,7 @@ const NOTE_NEG = [
 function judgeNote(text) {
   if (!text || !text.trim()) return { mult: 1, tags: [], verdict: '' };
   let t = normJ(text);
+  if (VIDEO_CREATE.test(t)) t = t.replace(/ youtube /g, ' ');
   const tags = [];
   let sum = 0;
   for (const [re, tag, v] of NOTE_POS) if (re.test(t)) { sum += v; tags.push('+ ' + tag); t = t.replace(re, ' '); }
@@ -2582,10 +2590,12 @@ function judgeNote(text) {
   return { mult, tags, verdict };
 }
 
+/* « je crée une vidéo » ≠ « je regarde des vidéos » */
+const VIDEO_CREATE = / (tourn|monte|montage|cree|creation|creer|film(e|er|ee)? |script|upload|publi|ma video|mes videos|ma chaine|miniature|vlog)/;
 /* Journée racontée → score de Concentration de −3 à +3 */
 const DAY_FOCUS = [
   [/ (travail|bosse|boss|taf|boulot|chantier)/, 'travail'], [/ (revis|etudi|cours|lecture|lu |livre|appris|formation|tuto)/, 'apprentissage'],
-  [/ (montage|monte|clip|edit|miniature)/, 'montage'], [/ (live|stream)/, 'live'], [/ (code|programm|projet|ecrit|script)/, 'projet'],
+  [/ (montage|monte|clip|edit|miniature)/, 'montage'], [/ (video|videos|youtube|tournage|tourne|filme|upload|publie|ma chaine)/, 'vidéos'], [/ (live|stream)/, 'live'], [/ (code|programm|projet|ecrit|script)/, 'projet'],
   [/ (sport|muscu|salle|course|couru|entrain|foot|boxe|natation)/, 'sport'], [/ (medit|lecture|focus|concentr|productif|pomodoro|deep work)/, 'focus'],
 ];
 const DAY_DISTRACT = [
@@ -2612,7 +2622,8 @@ function judgeDay(text) {
     const t = normJ(c);
     const h = hoursIn(c);
     const isLive = / (live|stream)/.test(t);
-    const d = DAY_DISTRACT.filter(([re, tag]) => re.test(t) && !(isLive && tag === 'TikTok'));
+    const create = VIDEO_CREATE.test(t);
+    const d = DAY_DISTRACT.filter(([re, tag]) => re.test(t) && !(isLive && tag === 'TikTok') && !(create && tag === 'vidéos'));
     const f = DAY_FOCUS.filter(([re]) => re.test(t));
     if (d.length && !(/ sans /.test(t))) { distH += h != null ? h : 0.75; d.forEach(([, tag]) => distTags.add(tag)); }
     else if (f.length) { focusH += h != null ? h : 0.75; f.forEach(([, tag]) => focusTags.add(tag)); }
@@ -2708,7 +2719,7 @@ function progressionInfo(today, st, at) {
 const BIL_GOOD = [
   { re: / (sport|muscu|salle|course|couru|footing|jogging|run |velo|natation|boxe|foot|basket|pompes|abdos|entrain|cardio|marche|seance)/, label: 'Sport', w: { physique: 1, discipline: 0.5 }, act: /sport/ },
   { re: / (live|stream)/, label: 'Live', w: { concentration: 0.8, discipline: 0.6 }, act: /live/ },
-  { re: / (clip|montage|monte|edit|miniature|tournage|filme)/, label: 'Clips / montage', w: { intelligence: 0.8, concentration: 0.6 }, act: /clip|montage/ },
+  { re: / (clip|montage|monte|edit|miniature|tournage|tourne|filme|video|videos|youtube|upload|publie|ma chaine)/, label: 'Vidéos / montage', w: { intelligence: 0.8, concentration: 0.6 }, act: /clip|montage|video|youtube/ },
   { re: / (lecture|lu |livre|appris|apprentissage|cours|revis|etudi|formation|tuto|anglais|langue|podcast)/, label: 'Apprentissage', w: { intelligence: 1, concentration: 0.5 }, act: /lecture|apprentissage/ },
   { re: / (travail|bosse|boulot|taf|chantier|job|shift)/, label: 'Travail', w: { discipline: 0.8, physique: 0.4 }, act: /travail/ },
   { re: / (code|programm|projet|business|entreprise|ecrit|script)/, label: 'Projet', w: { intelligence: 0.8, discipline: 0.6, concentration: 0.4 } },
@@ -2867,7 +2878,7 @@ function saveBilan() {
    ========================================================= */
 const QUEST_XP = 100, QUEST_PENALTY_XP = 50;
 const isPhysical = l => !l.bad && (l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name)));
-const isFocus = l => !l.bad && (['live', 'clips', 'lecture'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l)));
+const isFocus = l => !l.bad && (['live', 'clips', 'lecture', 'youtube', 'videos'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet|youtube|vid[ée]o/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l)));
 function questIndex() {
   const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0) + '|' + state.reps.length + ':' + state.reps.reduce((t, r) => t + r.n, 0);
   if (questIndex._k === key) return questIndex._v;
@@ -2892,7 +2903,7 @@ function dailyQuest(date) {
   const goals = [];
   if (cfg.pushups > 0) goals.push({ key: 'pushups', icon: '💪', label: `${cfg.pushups} pompes`, cur: o.pushups, target: cfg.pushups, unit: '', reps: true });
   if (cfg.sport > 0) goals.push({ key: 'sport', icon: '🏋️', label: 'Entraînement physique', cur: o.phys, target: cfg.sport, unit: 'min' });
-  if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
+  if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, vidéos YouTube, mes vidéos, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
   if (cfg.meals > 0) goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
   if (cfg.bilan) goals.push({ key: 'waste', icon: '⛔', label: 'Temps perdu limité', hint: 'déclaré dans « mal fait »', cur: o.waste, target: cfg.waste, unit: 'min', max: true });
   goals.forEach(g => { g.done = g.max ? g.cur <= g.target : g.cur >= g.target; });
