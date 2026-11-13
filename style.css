@@ -1397,25 +1397,10 @@ body {
 .log-day-fixed { margin: -4px 0 14px; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255, 200, 87, .65); background: rgba(255, 200, 87, .08); color: #ffd27a; font-weight: 700; text-align: center; }
 
 /* ===================================================================
-   v3.0 · SURPASSEMENT — musique, paliers de lumière, mode ULTIME,
+   v3.0 · SURPASSEMENT — paliers de lumière, mode ULTIME,
    pompes (bras, page 1 000), sport par exercice, malbouffe, sommeil,
    alcool, ronds de stats en couleur, graphiques avec bulle
    =================================================================== */
-
-/* ---- bouton musique (toujours visible) ---- */
-.music-ctl { position: absolute; right: 22px; top: 4px; display: flex; gap: 6px; z-index: 5; }
-.music-btn, .music-set { min-width: 38px; height: 34px; padding: 0 8px; border-radius: 10px; border: 1px solid var(--line); background: rgba(3, 8, 18, .65); color: var(--text); font: 700 13px var(--mono); }
-.music-btn.off { opacity: .55; }
-.music-set { color: var(--neon-2); letter-spacing: .05em; }
-html[data-tier="5"] .music-set, html[data-tier="6"] .music-set { color: #ffe7a0; border-color: rgba(255, 210, 120, .8); box-shadow: 0 0 12px rgba(255, 200, 90, .5); }
-.mus-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-weight: 700; }
-.mus-vol { width: 100%; accent-color: var(--neon); height: 30px; }
-.mus-tiers { display: grid; gap: 6px; margin: 6px 0 10px; }
-.mus-tier { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); font-size: 13px; opacity: .6; }
-.mus-tier b { font-family: var(--mono); color: var(--neon-2); }
-.mus-tier em { font-style: normal; font-size: 11px; color: var(--text-dim); }
-.mus-tier.past { opacity: .85; }
-.mus-tier.on { opacity: 1; border-color: var(--neon); background: rgba(56, 200, 255, .14); box-shadow: 0 0 14px rgba(56, 200, 255, .35); }
 
 /* ---- couleur de l'app selon la progression globale (rang E → S) ---- */
 html[data-prog="D"] { --neon: #3fe0c8; --neon-2: #9ff5e6; }

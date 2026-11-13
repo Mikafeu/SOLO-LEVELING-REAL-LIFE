@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.1.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -236,6 +236,7 @@ function sanitizeState(raw) {
       name: m.name.slice(0, 120), grams: Math.min(5000, num(m.grams)),
       kcal: num(m.kcal), p: num(m.p), g: num(m.g), l: num(m.l),
       src: typeof m.src === 'string' ? m.src.slice(0, 10) : 'manuel',
+      ...(m.liq === true ? { liq: true } : {}),
     }));
   s.bilans = (Array.isArray(raw.bilans) ? raw.bilans : [])
     .filter(b => b && isValidKey(b.date) && (typeof b.good === 'string' || typeof b.bad === 'string'))
@@ -1569,7 +1570,7 @@ function nutritionDays(today) {
 
 /* --- base Ciqual --- */
 let ciqual = null, ciqualLoading = null;
-const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange mangee manger pris prise bu avale que qui mon ma mes ce cette aussi encore ensuite matin midi soir aujourd hui dose doses scoop scoops mesure mesures peu beaucoup assiette assiettes part parts poignee poignees boite boites sachet sachets paquet paquets gros grosse'.split(' '));
+const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g gr grammes gramme ml cl kg portion portions cuillere cuilleres bol verre tranche tranches morceau morceaux piece pieces j ai mange mangee manger pris prise bu avale que qui mon ma mes ce cette aussi encore ensuite matin midi soir aujourd hui dose doses scoop scoops mesure mesures bouteille bouteilles canette canettes tasse tasses gobelet gobelets peu beaucoup assiette assiettes part parts poignee poignees boite boites sachet sachets paquet paquets gros grosse'.split(' '));
 /* Marques : reconnues (même mal écrites) pour chercher le produit, retirées pour la base générique */
 const BRAND_FIX = [[/\b(10|dix|in|ine|inn)\s*shape\b/gi, 'InShape'], [/\btibo\s+InShape\b/gi, 'InShape'], [/\bmy\s*prot[eé]ine?\b/gi, 'MyProtein'], [/\bnutri\s*(and|&|et|n)\s*co\b/gi, 'Nutri&Co'],
   [/\bnutri\s*muscle\b/gi, 'Nutrimuscle'], [/\boptimum(\s*nutrition)?\b|\bgold\s*standard\b/gi, 'Optimum'], [/\bapplied(\s*nutrition)?\b/gi, 'Applied'], [/\bbiotech(\s*usa)?\b/gi, 'Biotech'],
@@ -1643,6 +1644,8 @@ const FOOD_DEFAULTS = {
   'skyr': 'Skyr / yaourt protéiné nature (type HiPro)', 'yaourt proteine': 'Skyr / yaourt protéiné nature (type HiPro)', 'hipro': 'Skyr / yaourt protéiné nature (type HiPro)',
   'yaourt hipro': 'Skyr / yaourt protéiné nature (type HiPro)', 'fromage': 'Fromage (aliment moyen)', 'fromage rape': 'Emmental ou emmenthal râpé', 'gruyere rape': 'Emmental ou emmenthal râpé',
   'emmental rape': 'Emmental ou emmenthal râpé', 'salade': 'Salade verte, crue, sans assaisonnement', 'salade verte': 'Salade verte, crue, sans assaisonnement', 'salade tomate': 'Tomate, crue',
+  'eau': 'Eau du robinet', 'eau robinet': 'Eau du robinet', 'eau plate': 'Eau minérale, plate (aliment moyen)', 'eau minerale': 'Eau minérale (aliment moyen)',
+  'eau gazeuse': 'Eau minérale, gazeuse (aliment moyen)', 'eau petillante': 'Eau minérale, gazeuse (aliment moyen)', 'bouteille eau': 'Eau minérale, plate (aliment moyen)',
   'puree': 'Pomme de terre, purée (aliment moyen)', 'puree pomme terre': 'Pomme de terre, purée (aliment moyen)',
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
@@ -1783,7 +1786,7 @@ function protCands(query, brand) {
 const GROUP_PORTION = [
   [/viandes|poissons|substitus/, 120], [/charcuteries/, 50], [/pâtes, riz|légumineuses|pommes de terre/, 200], [/légumes/, 150], [/^fruits$/, 130],
   [/produits laitiers frais|desserts|crèmes dessert/, 125], [/fromages/, 30], [/pains/, 60], [/viennoiseries/, 60], [/plats composés|salades composées/, 300],
-  [/pizzas/, 150], [/sandwichs/, 250], [/soupes/, 300], [/boissons sans alcool|boisson alcoolisées|laits|eaux/, 250], [/gâteaux/, 80],
+  [/pizzas/, 150], [/sandwichs/, 250], [/soupes/, 300], [/boisson|laits|eaux/, 250], [/gâteaux/, 80],
   [/biscuits sucrés|biscuits apéritifs|barres/, 30], [/céréales de petit/, 40], [/chocolats|confiseries/, 30], [/sauces|condiments|confitures/, 20],
   [/huiles|beurres|margarines|matières grasses|sucres, miels/, 10], [/fruits à coque/, 30], [/œufs/, 55], [/glaces|desserts glacés|sorbets/, 100],
   [/compléments/, 30], [/fast food/, 250],
@@ -1796,7 +1799,7 @@ function defaultPortion(f) {
   return m ? m[1] : 100;
 }
 const EMOJIS = [
-  [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza/, '🍕'],
+  [/^eau\b|\beau (minerale|de source|du robinet|gazeuse|plate)/, '💧'], [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza/, '🍕'],
   [/burger|big mac|cheeseburger/, '🍔'], [/frite/, '🍟'], [/tacos|kebab|grec|wrap|sandwich/, '🌯'], [/poulet|dinde|volaille|nugget/, '🍗'],
   [/boeuf|steak|viande|veau|porc|agneau|jambon|saucisse|lardon|bacon/, '🥩'], [/saumon|thon|poisson|cabillaud|crevette|sardine|colin/, '🐟'],
   [/oeuf/, '🥚'], [/fromage|emmental|gruyere|comte|mozzarella|camembert/, '🧀'], [/yaourt|skyr|fromage blanc|lait|creme/, '🥛'],
@@ -1936,10 +1939,11 @@ const UNIT = '(?:kg|kilos?|g|gr|grammes?|ml|cl|l|litres?)';
 /* Découpe le texte en aliments, même sans virgules :
    "2 pains 50g viande 70g huile d'olive" ou "viande 50g, dinde 400g" */
 function splitFoodText(text) {
+  text = text.replace(/(\d)[.,](\d)/g, '$1\u2024$2'); // « 1,5 L » = 1,5 (et pas « 1 » puis « 5 L »)
   const t = text.replace(/\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)\b(?=\s+[a-zà-ÿœ])/gi, w => String(WORDNUM[w.toLowerCase()]));
   const parts = t.split(/\n|,|;|\.|\+|\bet\b|\bavec\b|\bpuis\b|\bplus\b|\bensuite\b|\bapr[eè]s\b|\baccompagn[ée]e?s?\s+d[e']/i).map(x => x.trim()).filter(x => x.length > 1);
   const out = [];
-  const qty = new RegExp(`\\d+(?:[.,]\\d+)?\\s*${UNIT}?(?![a-z%\\d])`, 'gi');
+  const qty = new RegExp(`\\d+(?:[.,\u2024]\\d+)?\\s*${UNIT}?(?![a-z%\\d])`, 'gi');
   for (const p of parts) {
     const ms = [...p.matchAll(qty)].filter(m => !/^\s*%/.test(p.slice(m.index + m[0].length)));
     if (ms.length <= 1) { out.push(p); continue; }
@@ -1950,6 +1954,7 @@ function splitFoodText(text) {
     const tail = p.slice(last).trim();
     if (tail) out.push(tail);
   }
+  for (let k = 0; k < out.length; k++) out[k] = out[k].replace(/\u2024/g, '.');
   // un morceau sans mot ("125g") appartient à l'aliment d'avant
   const merged = [];
   for (const x of out) {
@@ -2100,7 +2105,7 @@ function renderMeals() {
           <div class="entry casc" style="--j:${xi}">
             <div class="entry-body">
               <div class="entry-title">${esc(x.name)}</div>
-              <div class="entry-meta">${fmtNum(x.grams)} g · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' || x.src === 'marque' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
+              <div class="entry-meta">${x.grams ? fmtQty(x.grams, x.liq || isLiquid({ name: x.name })) + ' · ' : ''}P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' || x.src === 'marque' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
             </div>
             <div class="entry-xp" style="color:var(--text)">${fmtNum(x.kcal)}</div>
             <button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button>
@@ -2113,6 +2118,21 @@ function renderMeals() {
     }).join('')}
   `;
 }
+
+/* ---------- Boissons : quantités en litres (on garde 1 g ≈ 1 ml pour les calculs) ---------- */
+const LIQUID_GRP = /boisson|^laits$|^eaux$/;
+const LIQUID_NAME = /\b(eau|eaux|lait|jus|coca|cola|soda|sirop|the|cafe|biere|vin|smoothie|boisson|limonade|milkshake|kefir|red bull|monster|fanta|sprite|ice tea|nectar|cidre|champagne|whisky|vodka|rhum|pastis|orangina|oasis|perrier|badoit|lassi)\b/;
+function isLiquid(f) {
+  if (!f) return false;
+  if (f.liq === true) return true;
+  const n = normTxt(f.name || '');
+  if (/\b(poudre|tablette|confiture|fromage|yaourt|glace|creme|pate|grains?)\b|chocolat au lait|riz au lait|pain au lait|cafe moulu/.test(n) && !/\bboisson/.test(n)) return false;
+  if (f.ptype) return f.ptype === 'drink';
+  if (f.grp) return LIQUID_GRP.test(f.grp);
+  return LIQUID_NAME.test(n);
+}
+const fmtL = ml => `${(Math.round(ml) / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 3 })} L`;
+const fmtQty = (g, liq) => (liq ? fmtL(g) : `${fmtNum(g)} g`);
 
 /* ---------- Ajout d'aliments : on écrit comme on parle, on choisit en touchant ---------- */
 const capFirst = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -2171,7 +2191,7 @@ function recentFoods() {
     if (seen.has(k) || !(m.grams > 0)) continue;
     seen.add(k);
     const r = 100 / m.grams;
-    out.push({ food: { id: 'r' + k.replace(/ /g, ''), name: m.name, src: m.src || 'ciqual', per100: { kcal: m.kcal * r, p: m.p * r, g: m.g * r, l: m.l * r } }, grams: m.grams });
+    out.push({ food: { id: 'r' + k.replace(/ /g, ''), name: m.name, src: m.src || 'ciqual', liq: m.liq || isLiquid({ name: m.name }), per100: { kcal: m.kcal * r, p: m.p * r, g: m.g * r, l: m.l * r } }, grams: m.grams });
     if (out.length >= 12) break;
   }
   return out;
@@ -2184,13 +2204,24 @@ function tileHtml(f, i, j, on) {
       <span class="ft-emo">${foodEmoji(f)}</span>
       <span class="ft-name">${esc(short)}</span>
       ${sub ? `<span class="ft-sub">${esc(sub)}</span>` : ''}
-      <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>par dose de ${d} g</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>pour 100 g</small>`}</span>
+      <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>${isLiquid(f) ? `pour ${fmtL(d)}` : `par dose de ${d} g`}</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>${isLiquid(f) ? 'pour 100 ml' : 'pour 100 g'}</small>`}</span>
       ${on ? '<span class="ft-check">✓</span>' : ''}
     </button>`;
 }
 function qtyHtml(it, i, f) {
   const g = it.grams || 0;
   let chips;
+  if (isLiquid(f)) {
+    const lv = g ? String(Math.round(g) / 1000).replace('.', ',') : '';
+    chips = [250, 330, 500, 1000].map(v => [v, fmtL(v), '']);
+    return `
+      <div class="fqty">
+        <button type="button" class="fq-btn" data-step="${i}:-1" aria-label="Moins">−</button>
+        <label class="fq-box liq ${it.estimated ? 'est' : ''}"><input class="fq-val" data-grams="${i}" data-liq="1" inputmode="decimal" value="${lv}" placeholder="?"><span>L</span></label>
+        <button type="button" class="fq-btn" data-step="${i}:1" aria-label="Plus">+</button>
+      </div>
+      <div class="fchips">${chips.map(([v, lab]) => `<button type="button" class="fchip ${v === g ? 'on' : ''}" data-setg="${i}:${v}">${lab}</button>`).join('')}</div>`;
+  }
   if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} dose${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
   else {
     const b = defaultPortion(f), r = b <= 30 ? 5 : 10;
@@ -2286,7 +2317,7 @@ function openFoodSheet(meal) {
       </div>
       <div class="fs-hint">Écris comme tu parles, même sans les grammes. 🎤 Tu peux aussi dicter avec le micro du clavier.</div>
       ${recents.length ? `<div class="fs-sec">⏱ Déjà mangé · touche pour ajouter</div>
-      <div class="fs-recents">${recents.map((r, k) => `<button type="button" class="rchip" data-recent="${k}"><span>${foodEmoji(r.food)}</span><b>${esc(splitName(r.food).short)}</b><small>${fmtNum(r.grams)} g</small></button>`).join('')}</div>` : ''}
+      <div class="fs-recents">${recents.map((r, k) => `<button type="button" class="rchip" data-recent="${k}"><span>${foodEmoji(r.food)}</span><b>${esc(splitName(r.food).short)}</b><small>${fmtQty(r.grams, r.food.liq)}</small></button>`).join('')}</div>` : ''}
       <div id="food-rows"></div>
       <div class="fs-foot" id="food-save" style="display:none">
         <div id="food-total"></div>
@@ -2428,7 +2459,7 @@ function openFoodSheet(meal) {
         if (st) {
           const [i, dir] = pair(st.dataset.step), it = items[i], f = it.cands[it.sel];
           if (!f) return;
-          const b = defaultPortion(f), step = f.portion || (b <= 30 ? 5 : b <= 100 ? 10 : 25);
+          const b = defaultPortion(f), step = isLiquid(f) ? 50 : f.portion || (b <= 30 ? 5 : b <= 100 ? 10 : 25);
           const cur = it.grams || 0;
           it.grams = Math.max(step, Math.min(5000, Math.round((cur + +dir * step) / step) * step || step));
           it.gramsSrc = 'user'; it.estimated = false;
@@ -2483,7 +2514,7 @@ function openFoodSheet(meal) {
           const qWas = dailyQuest(day).done;
           ok.forEach((it, k) => {
             const f = it.cands[it.sel];
-            state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src });
+            state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src, ...(isLiquid(f) ? { liq: true } : {}) });
           });
           save();
           close(null);
@@ -2497,7 +2528,12 @@ function openFoodSheet(meal) {
       });
       sheet.addEventListener('change', e => {
         const g = e.target.closest('[data-grams]');
-        if (g) { const v = parseFloat(g.value.replace(',', '.')); const it = items[+g.dataset.grams]; it.grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; it.gramsSrc = 'user'; it.estimated = false; draw(); }
+        if (g) {
+          let v = parseFloat(g.value.replace(',', '.'));
+          // boisson : on tape des litres (0,5) ; un grand nombre (330) est compris en ml
+          if (g.dataset.liq && Number.isFinite(v)) v = v <= 10 ? v * 1000 : v;
+          const it = items[+g.dataset.grams]; it.grams = Number.isFinite(v) && v > 0 ? Math.min(5000, Math.round(v)) : null; it.gramsSrc = 'user'; it.estimated = false; draw();
+        }
       });
       setTimeout(() => { const ta = $('#food-text', sheet); if (ta && !recents.length) ta.focus(); }, 300);
     },
@@ -3515,9 +3551,7 @@ function renderSettings() {
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Effets</div></div>
       <label class="field toggle"><span>🔊 Sons du Système</span><input type="checkbox" data-pref="sound" ${prefs.sound ? 'checked' : ''}></label>
-      <label class="field toggle"><span>📳 Vibrations (iPhone iOS 18+ et Android)</span><input type="checkbox" data-pref="vibrate" ${prefs.vibrate ? 'checked' : ''}></label>
-      <label class="field toggle"><span>🎵 Musique (7 paliers selon ton surpassement)</span><input type="checkbox" data-pref="music" ${prefs.music !== false ? 'checked' : ''}></label>
-      <label class="field" style="margin-bottom:0"><span>Volume de la musique</span><input type="range" min="0" max="100" step="5" class="mus-vol" data-musvol="1" value="${Math.round((prefs.musicVol != null ? prefs.musicVol : 0.5) * 100)}"></label>
+      <label class="field toggle" style="margin-bottom:0"><span>📳 Vibrations (iPhone iOS 18+ et Android)</span><input type="checkbox" data-pref="vibrate" ${prefs.vibrate ? 'checked' : ''}></label>
     </section>
 
     <section class="panel">
@@ -3807,7 +3841,7 @@ async function resetAll() {
 }
 
 /* =========================================================
-   v3 · SURPASSEMENT : paliers, musique, lumière, sons de jeu,
+   v3 · SURPASSEMENT : paliers de lumière, sons de jeu,
    sport par exercice, mauvaises habitudes plus justes
    ========================================================= */
 
@@ -3887,7 +3921,7 @@ function sheetDayClick(sheet, e) {
 }
 
 /* =========================================================
-   SURPASSEMENT DU JOUR → palier de musique et de lumière
+   SURPASSEMENT DU JOUR → palier de lumière
    avancement = moyenne de (fait ÷ objectif) des quêtes du jour
    ========================================================= */
 const goalRatio = g => (g.max ? (g.cur <= g.target ? 1 : Math.max(0, g.target / Math.max(1, g.cur))) : Math.max(0, g.cur / Math.max(1, g.target)));
@@ -3914,12 +3948,9 @@ function dayTier() {
   return { tier, s };
 }
 function applyTier() {
-  if (typeof Musique === 'undefined') return;
   const { tier, s } = dayTier();
   const root = document.documentElement;
   if (root.dataset.tier !== String(tier)) root.dataset.tier = tier;
-  Musique.setTier(tier);
-  updateMusicBtn(tier);
   if (tier >= 6) ensureSparkles(); else removeSparkles();
   if (shownTier !== null && tier > shownTier) announceTier(tier, s);
   shownTier = tier;
@@ -3932,7 +3963,7 @@ function whenCalm(fn, wait = 300) {
 function announceTier(t, s) {
   whenCalm(() => {
     if (t === 6) return ultimateExplosion(s);
-    if (t === 1) return toast('Palier 1 · En route', 'La moitié est faite : la musique accélère.');
+    if (t === 1) return toast('Palier 1 · En route', 'La moitié est faite. Continue.');
     if (t === 2) return; // la fenêtre « QUÊTE ACCOMPLIE » s'en charge
     tierBanner(t, s);
   }, 700);
@@ -3971,44 +4002,6 @@ function removeSparkles() { const b = $('#fx-sparkle'); if (b) b.remove(); }
 /* La couleur de toute l'app évolue avec la progression globale */
 function setProgTheme() {
   try { const g = progressionInfo(todayKey()).grade; if (document.documentElement.dataset.prog !== g) document.documentElement.dataset.prog = g; } catch (_) {}
-}
-
-/* ---------- Bouton musique (toujours visible) ---------- */
-function updateMusicBtn(tier = shownTier || 0) {
-  const b = $('#music-btn'), s = $('#music-set');
-  if (b) { b.textContent = prefs.music !== false ? '🔊' : '🔇'; b.classList.toggle('off', prefs.music === false); b.setAttribute('aria-label', prefs.music !== false ? 'Couper la musique' : 'Remettre la musique'); }
-  if (s) s.textContent = 'P' + tier;
-}
-function openMusicPanel() {
-  const t = shownTier || 0;
-  openSheet({
-    tag: '[SYSTÈME] Musique',
-    title: '🎵 Musique du Système',
-    body: `
-      <div class="mus-row"><span>Musique</span><button type="button" class="btn small ${prefs.music !== false ? 'primary' : ''}" data-mus-toggle="1">${prefs.music !== false ? '🔊 Activée' : '🔇 Coupée'}</button></div>
-      <label class="field"><span>Volume</span><input type="range" min="0" max="100" step="5" value="${Math.round((prefs.musicVol != null ? prefs.musicVol : 0.5) * 100)}" id="mus-vol" class="mus-vol"></label>
-      <div class="mus-tiers">${REGLAGES_PALIERS.map(p => `<div class="mus-tier ${p.n === t ? 'on' : p.n < t ? 'past' : ''}"><b>P${p.n}</b><span>${esc(p.nom)}</span><em>${esc(Musique.themes[p.n])}</em></div>`).join('')}</div>
-      <p class="small faint">Musiques originales, créées par l'app et jouées en direct : libres de droits (CC0). Sur iPhone, la musique démarre après ton premier toucher. En mode silencieux, l'iPhone peut couper le son.</p>`,
-    buttons: [{ label: 'Fermer', value: null, cls: 'ghost' }],
-    onMount(sheet) {
-      sheet.addEventListener('click', e => {
-        const tg = e.target.closest('[data-mus-toggle]');
-        if (!tg) return;
-        toggleMusic();
-        tg.textContent = prefs.music !== false ? '🔊 Activée' : '🔇 Coupée';
-        tg.classList.toggle('primary', prefs.music !== false);
-      });
-      $('#mus-vol', sheet).addEventListener('input', e => { prefs.musicVol = +e.target.value / 100; savePrefs(); Musique.setVolume(prefs.musicVol); });
-    },
-  });
-}
-function toggleMusic() {
-  prefs.music = prefs.music === false;
-  savePrefs();
-  Musique.unlock();
-  Musique.setEnabled(prefs.music);
-  updateMusicBtn();
-  haptic();
 }
 
 /* =========================================================
@@ -4429,7 +4422,12 @@ function openJunkSheet(activity) {
           };
           if (addMeal) {
             const meal = date === todayKey() ? guessMeal() : 'midi';
-            its.forEach((x, k) => { const kc = x.kcal * x.q; state.meals.push({ id: uid(), date, meal, ts: Date.now() + k, name: `${enO.nom} · ${x.q > 1 ? x.q + '× ' : ''}${x.nom}`.slice(0, 120), grams: 0, kcal: kc, p: Math.round((kc * 0.15) / 4), g: Math.round((kc * 0.45) / 4), l: Math.round((kc * 0.4) / 9), src: 'fastfood' }); });
+            its.forEach((x, k) => {
+              const kc = x.kcal * x.q, cl = x.dessin === 'boisson' && (x.nom.match(/(\d+)\s*cl/) || [])[1];
+              const drink = x.dessin === 'boisson';
+              state.meals.push({ id: uid(), date, meal, ts: Date.now() + k, name: `${enO.nom} · ${x.q > 1 ? x.q + '× ' : ''}${x.nom}`.slice(0, 120), grams: cl ? cl * 10 * x.q : 0, kcal: kc,
+                p: drink ? 0 : Math.round((kc * 0.15) / 4), g: drink ? Math.round(kc / 4) : Math.round((kc * 0.45) / 4), l: drink ? 0 : Math.round((kc * 0.4) / 9), src: 'fastfood', ...(drink ? { liq: true } : {}) });
+            });
           }
           close(null);
           addBadLog(activity, null, '', date, extra);
@@ -4529,18 +4527,8 @@ function openAlcoholSheet(activity) {
   });
 }
 
-/* ---------- Démarrage : musique, palier, couleur ---------- */
+/* ---------- Démarrage : palier, couleur ---------- */
 function initSurpass() {
-  if (typeof Musique === 'undefined') return;
-  Musique.setVolume(prefs.musicVol != null ? prefs.musicVol : 0.5);
-  Musique.setEnabled(prefs.music !== false);
-  const unlock = () => Musique.unlock();
-  ['pointerdown', 'touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, unlock, { passive: true }));
-  document.addEventListener('visibilitychange', () => (document.hidden ? Musique.pause() : Musique.resume()));
-  const mb = $('#music-btn'), ms = $('#music-set');
-  if (mb) mb.addEventListener('click', e => { e.stopPropagation(); toggleMusic(); });
-  if (ms) ms.addEventListener('click', e => { e.stopPropagation(); Musique.unlock(); openMusicPanel(); });
-  document.addEventListener('input', e => { if (e.target.dataset && e.target.dataset.musvol) { prefs.musicVol = +e.target.value / 100; savePrefs(); Musique.unlock(); Musique.setVolume(prefs.musicVol); } });
   applyTier();
   setProgTheme();
 }
@@ -4764,7 +4752,6 @@ document.addEventListener('change', e => {
   if (e.target.dataset && e.target.dataset.pref) {
     prefs[e.target.dataset.pref] = e.target.checked;
     savePrefs();
-    if (e.target.dataset.pref === 'music') { Musique.unlock(); Musique.setEnabled(prefs.music); updateMusicBtn(); }
     if (e.target.checked) { sfx('success'); haptic(); }
     return;
   }

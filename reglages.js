@@ -20,7 +20,7 @@ const REGLAGES_RANGS = {
   // poids atteinte (0,5 = 50 %) · records : records d'exercice battus
 };
 
-/* ---------- Surpassement : paliers de musique et de lumière ----------
+/* ---------- Surpassement : paliers de lumière ----------
    avancement = moyenne de (fait ÷ objectif) des quêtes du jour
    surpassement = avancement − 100 % */
 const REGLAGES_PALIERS = [
