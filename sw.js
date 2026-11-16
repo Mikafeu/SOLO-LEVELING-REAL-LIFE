@@ -1,7 +1,7 @@
 /* Service worker : fait marcher l'app hors connexion
    et installe automatiquement les nouvelles versions.
    ⚠️ Augmenter VERSION à chaque mise à jour (même numéro que app.js). */
-const VERSION = '3.3.0';
+const VERSION = '3.4.0';
 const CACHE = 'mon-systeme-' + VERSION;
 const ASSETS = [
   './',
@@ -11,6 +11,7 @@ const ASSETS = [
   './app.js?v=' + VERSION,
   './holo.js?v=' + VERSION,
   './vendor/three.module.min.js',
+  './vendor/zxing-0.23.0.min.js',
   './assets/corps.bin',
   './data/ciqual.json',
   './manifest.webmanifest',

@@ -17,6 +17,10 @@ normal/fort/légendaire), mauvaises habitudes plus justes (écrans ×0,5 après 
 produit avec calories sourcées, coucher tard, alcool en verres), ronds de stats en couleur,
 graphiques Jour/Semaine/Mois/Année avec bulle au doigt, rangs A et S gardés (plafond d'XP par
 jour + régularité sur des semaines). Tous les réglages sont dans `reglages.js`.
+v3.4 : recherche intelligente des aliments en cascade — mes aliments, table Ciqual 2025
+(recherche tolérante aux fautes), Open Food Facts avec scan du code-barres, puis plats composés
+découpés en ingrédients modifiables (IA Claude Haiku 5.5 via un relais Cloudflare, ou recette
+type hors ligne), enregistrables comme « mon plat ».
 
 PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 (Safari → Partager → « Sur l'écran d'accueil ») et utilisable hors connexion.
@@ -32,7 +36,9 @@ PWA en HTML/CSS/JavaScript simple, sans framework, installable sur iPhone
 | `holo.js` | Hologramme 3D du corps (three.js) : rotation, rayures, affinage vers l'objectif |
 | `assets/corps.bin` | Modèle 3D du corps (format compact), ajusté aux photos |
 | `tools/sculpter_corps.py` | Recrée `corps.bin` : proportions des photos (`ajuster_corps.py`), maillage affiné, puis sculptures MAINTENANT et OBJECTIF (`sculpture.py`) |
-| `data/ciqual.json` | Table Ciqual 2020 (ANSES) : 3 092 aliments, valeurs pour 100 g |
+| `data/ciqual.json` | Table Ciqual 2025 de l'ANSES (licence ouverte Etalab 2.0) : 3 341 aliments, valeurs pour 100 g |
+| `vendor/zxing-0.23.0.min.js` | Lecteur de codes-barres (ZXing, licence Apache 2.0) quand le navigateur n'en a pas |
+| `relais-ia/` | Relais Cloudflare pour l'analyse IA des plats (garde la clé API) — voir `relais-ia/LISEZMOI.md` |
 | `vendor/three.module.min.js` | Moteur 3D three.js (licence MIT, `vendor/three-LICENSE.txt`) |
 | `sw.js` | Service worker : hors connexion + mises à jour |
 | `manifest.webmanifest`, `icons/` | Installation sur l'écran d'accueil |

@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.3.0';
+const APP_VERSION = '3.4.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -264,7 +264,10 @@ function sanitizeState(raw) {
     .map(f => ({ id: typeof f.id === 'string' ? f.id : uid(), name: f.name.slice(0, 80), ts: Number.isFinite(f.ts) ? f.ts : 0, u: Number.isFinite(f.u) ? f.u : 0,
       per100: { kcal: n2(f.per100.kcal), p: n2(f.per100.p), g: n2(f.per100.g), l: n2(f.per100.l) },
       portion: Number.isFinite(f.portion) && f.portion > 0 && f.portion <= 2000 ? Math.round(f.portion) : null,
-      grp: typeof f.grp === 'string' ? f.grp.slice(0, 40) : undefined, emoji: typeof f.emoji === 'string' ? f.emoji.slice(0, 8) : undefined }));
+      grp: typeof f.grp === 'string' ? f.grp.slice(0, 40) : undefined, emoji: typeof f.emoji === 'string' ? f.emoji.slice(0, 8) : undefined,
+      ...(Array.isArray(f.aliases) ? { aliases: f.aliases.filter(a => typeof a === 'string').slice(0, 5).map(a => a.slice(0, 80)) } : {}),
+      ...(Array.isArray(f.ingredients) ? { ingredients: f.ingredients.filter(x => x && typeof x.nom === 'string' && x.per100).slice(0, 30).map(x => ({ nom: x.nom.slice(0, 80), g: Math.max(0, Math.min(3000, Math.round(+x.g || 0))), src: typeof x.src === 'string' ? x.src.slice(0, 20) : 'Ciqual',
+        per100: { kcal: n2(+x.per100.kcal), p: n2(+x.per100.p), g: n2(+x.per100.g), l: n2(+x.per100.l) } })) } : {}) }));
   s.customExercises = (Array.isArray(raw.customExercises) ? raw.customExercises : [])
     .filter(x => x && typeof x.nom === 'string' && ['nombre', 'charge', 'duree'].includes(x.type))
     .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), nom: x.nom.slice(0, 40), type: x.type, coef: inR(x.coef, 0.5, 10) ? x.coef : 1, ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
@@ -1525,7 +1528,7 @@ async function dataUrlToBlob(u) { return (await fetch(u)).blob(); }
 
 /* =========================================================
    NUTRITION : repas, calories, protéines, glucides, lipides
-   Sources : table Ciqual 2020 (ANSES, embarquée, hors ligne)
+   Sources : table Ciqual 2025 de l'ANSES (licence ouverte Etalab 2.0, embarquée, hors ligne)
              + Open Food Facts (produits de marque, en ligne)
    ========================================================= */
 const MEALS = [
@@ -1593,11 +1596,58 @@ function loadCiqual() {
   if (!ciqualLoading) {
     ciqualLoading = fetch('data/ciqual.json').then(r => r.json()).then(d => {
       ciqual = d.concat(EXTRA_FOODS).map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
+      buildVocab();
       return ciqual;
     }).catch(e => { ciqualLoading = null; throw e; });
   }
   return ciqualLoading;
 }
+/* ---------- Recherche floue : fautes de frappe et accents ----------
+   Chaque mot inconnu est remplacé par le mot le plus proche de la base
+   (mots de 5 lettres et plus : 1 faute jusqu'à 7 lettres, 2 au-delà ; les mots courts ne sont pas corrigés). Les accents sont déjà ignorés. */
+let VOCAB = new Map(), VOCAB_LIST = [];
+function buildVocab() {
+  VOCAB = new Map();
+  const add = w => { if (w.length > 2 && !/^\d+$/.test(w)) VOCAB.set(w, (VOCAB.get(w) || 0) + 1); };
+  for (const f of ciqual) f._t.forEach(add);
+  for (const k of Object.keys(FOOD_DEFAULTS)) k.split(' ').forEach(add);
+  for (const f of state.customFoods) tokensOf(f.name).forEach(add);
+  VOCAB_LIST = [...VOCAB.keys()].sort();
+}
+function editDist(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev2 = null, prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1); // lettres inversées
+      cur.push(v);
+      if (v < best) best = v;
+    }
+    if (best > max) return max + 1;
+    prev2 = prev; prev = cur;
+  }
+  return prev[b.length];
+}
+const hasPrefix = w => { let lo = 0, hi = VOCAB_LIST.length; while (lo < hi) { const m = (lo + hi) >> 1; if (VOCAB_LIST[m] < w) lo = m + 1; else hi = m; } return lo < VOCAB_LIST.length && VOCAB_LIST[lo].startsWith(w); };
+const _fix = new Map();
+function fixToken(w) {
+  if (w.length < 5 || !VOCAB.size || VOCAB.has(w) || hasPrefix(w)) return w;
+  if (_fix.has(w)) return _fix.get(w);
+  const max = w.length <= 7 ? 1 : 2;
+  let best = w, bd = max + 1, bf = 0;
+  for (const [v, fr] of VOCAB) {
+    if (Math.abs(v.length - w.length) > max) continue;
+    const d = editDist(w, v, max);
+    if (d < bd || (d === bd && fr > bf)) { best = v; bd = d; bf = fr; }
+  }
+  _fix.set(w, best);
+  return best;
+}
+const fixTokens = q => q.map(fixToken);
+
 /* Produits courants absents de Ciqual (valeurs pour 100 g ou 100 ml, étiquettes des fabricants) */
 const EXTRA_FOODS = [
   { c: 'x1', n: 'Coca-Cola (canette 33 cl)', grp: 'boissons', kcal: 42, p: 0, g: 10.6, l: 0 },
@@ -1623,27 +1673,28 @@ const EXTRA_FOODS = [
     ['x19', 'Brochette poulet (chich taouk)', 160, 25, 6, 2],
     ['x20', 'Adana / köfte', 275, 17, 22, 2],
   ].map(([c, n, kcal, p, l, g]) => ({ c, n, grp: 'Kebab – viande seule', kcal, p, l, g, portion: 160, portionName: 'portion', note: 'Valeurs moyennes, estimation', r05: true })),
+  { c: 'x21', n: 'Sauce fromagère (type tacos)', grp: 'sauces', kcal: 186, p: 5, l: 16.5, g: 4.5, note: 'Valeurs moyennes, estimation' },
 ];
 
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
 const FOOD_DEFAULTS = {
-  'riz': 'Riz blanc, cuit, non salé', 'riz blanc': 'Riz blanc, cuit, non salé',
-  'pate': 'Pâtes sèches standard, cuites, non salées', 'pates': 'Pâtes sèches standard, cuites, non salées',
-  'oeuf': 'Oeuf, dur', 'oeuf dur': 'Oeuf, dur', 'oeuf plat': 'Oeuf, au plat, sans matière grasse',
-  'banane': 'Banane, pulpe, crue', 'pomme': 'Pomme, pulpe et peau, crue',
-  'poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'blanc poulet': 'Poulet, filet, sans peau, sauté/poêlé', 'filet poulet': 'Poulet, filet, sans peau, sauté/poêlé',
-  'pain': 'Pain, baguette, courante', 'baguette': 'Pain, baguette, courante',
-  'steak': 'Boeuf, steak haché 15% MG, cuit', 'steak hache': 'Boeuf, steak haché 15% MG, cuit', 'boeuf': 'Boeuf, steak ou bifteck, grillé',
+  'riz': "Riz blanc, cuit, sans sel ajouté", 'riz blanc': "Riz blanc, cuit, sans sel ajouté",
+  'pate': "Pâtes sèches, standard, cuites, sans sel ajouté", 'pates': "Pâtes sèches, standard, cuites, sans sel ajouté",
+  'oeuf': "Oeuf dur", 'oeuf dur': "Oeuf dur", 'oeuf plat': "Oeuf au plat, sans matière grasse",
+  'banane': "Banane, chair sans peau, crue", 'pomme': "Pomme, chair et peau, crue",
+  'poulet': "Poulet, filet sans peau grillé/poêlé", 'blanc poulet': "Poulet, filet sans peau grillé/poêlé", 'filet poulet': "Poulet, filet sans peau grillé/poêlé",
+  'pain': "Pain blanc (par ex. : baguette, boule…)", 'baguette': "Pain blanc (par ex. : baguette, boule…)",
+  'steak': "Boeuf, steak haché 15% MG cuit", 'steak hache': "Boeuf, steak haché 15% MG cuit", 'boeuf': "Boeuf, steak ou bifteck grillé/poêlé",
   'saumon': 'Saumon, cuit, sans précision (aliment moyen)', 'thon': 'Thon, au naturel, appertisé, égoutté',
   'lait': 'Lait demi-écrémé, UHT', 'pomme terre': "Pomme de terre, bouillie/cuite à l'eau", 'patate': "Pomme de terre, bouillie/cuite à l'eau",
   'frite': 'Frites de pommes de terre, surgelées, cuites en friteuse', 'avoine': 'Avoine, crue', 'flocon avoine': 'Avoine, crue',
-  'yaourt': 'Yaourt, lait fermenté ou spécialité laitière, nature', 'fromage blanc': 'Fromage blanc nature, 3% MG environ',
-  'huile': "Huile d'olive vierge extra", 'huile olive': "Huile d'olive vierge extra", 'lentille': "Lentille, bouillie/cuite à l'eau",
-  'haricot vert': 'Haricot vert, cuit', 'brocoli': 'Brocoli, cuit', 'jambon': 'Jambon cuit, supérieur', 'emmental': 'Emmental ou emmenthal',
-  'nutella': 'Pâte à tartiner chocolat et noisette', 'beurre': 'Beurre à 82% MG, doux', 'miel': 'Miel', 'sucre': 'Sucre blanc',
-  'jus orange': "Jus d'orange, pur jus", 'amande': 'Amande (avec peau)', 'beurre cacahuete': "Beurre de cacahuète ou Pâte d'arachide",
-  'viande': 'Viande cuite (aliment moyen)', 'viande hache': 'Boeuf, steak haché 15% MG, cuit', 'dinde': 'Dinde, escalope, sautée/poêlée',
-  'escalope dinde': 'Dinde, escalope, sautée/poêlée', 'escalope': 'Dinde, escalope, sautée/poêlée', 'poulet roti': 'Poulet, viande et peau, rôti/cuit au four',
+  'yaourt': "Yaourt ou lait fermenté, nature", 'fromage blanc': "Fromage blanc, nature, 2-3% MG",
+  'huile': "Huile d'olive vierge extra", 'huile olive': "Huile d'olive vierge extra", 'lentille': "Lentille, bouillie/cuite à l'eau (aliment moyen)",
+  'haricot vert': 'Haricot vert, cuit', 'brocoli': "Brocoli, bouilli/cuit à l'eau, fondant", 'jambon': 'Jambon cuit, supérieur', 'emmental': 'Emmental ou emmenthal',
+  'nutella': 'Pâte à tartiner chocolat et noisette', 'beurre': "Beurre à 80% MG minimum, doux", 'miel': 'Miel', 'sucre': 'Sucre blanc',
+  'jus orange': "Jus d'orange, pur jus", 'amande': "Amande, avec peau, sans sel ajouté", 'beurre cacahuete': "Beurre de cacahuète ou pâte d'arachide",
+  'viande': 'Viande cuite (aliment moyen)', 'viande hache': "Boeuf, steak haché 15% MG cuit", 'dinde': "Dinde, escalope grillée/poêlée",
+  'escalope dinde': "Dinde, escalope grillée/poêlée", 'escalope': "Dinde, escalope grillée/poêlée", 'poulet roti': "Poulet, viande et peau rôties/cuites au four",
   'coca': 'Coca-Cola (canette 33 cl)', 'coca cola': 'Coca-Cola (canette 33 cl)', 'coca zero': 'Coca-Cola zéro / light', 'coca light': 'Coca-Cola zéro / light',
   'red bull': 'Red Bull (canette 25 cl)', 'redbull': 'Red Bull (canette 25 cl)', 'monster': 'Monster Energy (canette 50 cl)',
   'whey': 'Whey protéine en poudre (moyenne)', 'proteine': 'Whey protéine en poudre (moyenne)', 'shaker proteine': 'Whey protéine en poudre (moyenne)',
@@ -1654,28 +1705,29 @@ const FOOD_DEFAULTS = {
   'kebab industriel': 'Kebab industriel (broche pressée)', 'kebab broche': 'Kebab industriel (broche pressée)', 'kebab broche pressee': 'Kebab industriel (broche pressée)',
   'chich taouk': 'Brochette poulet (chich taouk)', 'shish taouk': 'Brochette poulet (chich taouk)', 'chiche taouk': 'Brochette poulet (chich taouk)', 'brochette poulet': 'Brochette poulet (chich taouk)',
   'adana': 'Adana / köfte', 'kofte': 'Adana / köfte', 'adana kofte': 'Adana / köfte', 'kefta': 'Adana / köfte',
-  'grec': 'Sandwich grec ou Kebab, pita, crudités', 'sandwich grec': 'Sandwich grec ou Kebab, pita, crudités',
-  'burger': 'Hamburger, provenant de fast food', 'hamburger': 'Hamburger, provenant de fast food', 'cheeseburger': 'Cheeseburger, provenant de fast food',
-  'nugget': 'Volaille, croquette panée ou nuggets', 'pizza': 'Pizza au fromage ou Pizza margherita, préemballée', 'cookie': 'Cookie aux pépites de chocolat',
-  'chip': 'Chips de pommes de terre nature ou aromatisées, standard', 'couscous': 'Graine de couscous (semoule de blé dur précuite), cuite, non salée',
-  'semoule': 'Graine de couscous (semoule de blé dur précuite), cuite, non salée', 'fanta': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
+  'grec': "Sandwich grec ou kebab, pita, crudités", 'sandwich grec': "Sandwich grec ou kebab, pita, crudités",
+  'burger': "Hamburger, de restauration rapide", 'hamburger': "Hamburger, de restauration rapide", 'cheeseburger': "Cheeseburger, de restauration rapide",
+  'nugget': "Nuggets ou croquette panée de volaille, préemballé", 'pizza': "Pizza au fromage ou pizza margherita, préemballée", 'cookie': "Cookie au chocolat, préemballé",
+  'chip': "Chips de pommes de terre nature ou aromatisées", 'couscous': "Semoule ou graine de couscous, cuite, sans sel ajouté",
+  'semoule': "Semoule ou graine de couscous, cuite, sans sel ajouté", 'fanta': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
   'sprite': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'ice tea': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'soda': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
-  'pain mie': 'Pain de mie, complet', 'oeuf brouille': 'Oeuf, brouillé, avec matière grasse',
-  'chocolat': 'Chocolat noir à moins de 70% de cacao, à croquer, tablette', 'chocolat noir': 'Chocolat noir à moins de 70% de cacao, à croquer, tablette',
+  'pain mie': "Pain de mie complet, préemballé", 'oeuf brouille': "Oeuf brouillé, avec matière grasse",
+  'chocolat': "Chocolat noir 50 % de cacao environ, tablette", 'chocolat noir': "Chocolat noir 50 % de cacao environ, tablette",
   'chocolat lait': 'Chocolat au lait, tablette', 'thon': 'Thon, au naturel, appertisé, égoutté', 'mozzarella': 'Mozzarella au lait de vache',
-  'gruyere': 'Gruyère', 'comte': 'Comté', 'ketchup': 'Ketchup, préemballé', 'mayonnaise': 'Mayonnaise (70% MG min.), préemballée', 'mayo': 'Mayonnaise (70% MG min.), préemballée',
-  'tomate': 'Tomate, crue', 'carotte': 'Carotte, cuite', 'haricot rouge': "Haricot rouge, bouilli/cuit à l'eau", 'pois chiche': "Pois chiche, bouilli/cuit à l'eau",
-  'quinoa': "Quinoa, bouilli/cuit à l'eau, non salé", 'patate douce': 'Patate douce, cuite', 'muesli': 'Muesli (aliment moyen)',
-  'confiture': 'Confiture ou Marmelade, tout type de fruits (aliment moyen)', 'lait entier': 'Lait entier, UHT', 'cafe': 'Café, non instantané, non sucré, prêt à boire',
-  'the': 'Thé infusé, non sucré', 'pate tartiner': 'Pâte à tartiner chocolat et noisette',
+  'gruyere': "Gruyère, sans précision (origine France ou Suisse)", 'comte': 'Comté', 'ketchup': 'Ketchup, préemballé', 'mayonnaise': 'Mayonnaise (70% MG min.), préemballée', 'mayo': 'Mayonnaise (70% MG min.), préemballée',
+  'tomate': "Tomate ronde, crue", 'carotte': "Carotte, cuite (aliment moyen)", 'haricot rouge': "Haricot rouge, bouilli/cuit à l'eau", 'pois chiche': "Pois chiche, bouilli/cuit à l'eau",
+  'quinoa': "Quinoa, bouilli/cuit à l'eau, sans sel ajouté", 'patate douce': 'Patate douce, cuite', 'muesli': 'Muesli (aliment moyen)',
+  'confiture': "Confiture ou marmelade ou gelée, tout type de fruits, non allégée en sucres (aliment moyen)", 'lait entier': 'Lait entier, UHT', 'cafe': "Café, non instantané, sans sucres ajoutés, prêt à boire",
+  'the': "Thé infusé, sans sucres ajoutés", 'pate tartiner': 'Pâte à tartiner chocolat et noisette',
   'skyr': 'Skyr / yaourt protéiné nature (type HiPro)', 'yaourt proteine': 'Skyr / yaourt protéiné nature (type HiPro)', 'hipro': 'Skyr / yaourt protéiné nature (type HiPro)',
-  'yaourt hipro': 'Skyr / yaourt protéiné nature (type HiPro)', 'fromage': 'Fromage (aliment moyen)', 'fromage rape': 'Emmental ou emmenthal râpé', 'gruyere rape': 'Emmental ou emmenthal râpé',
-  'emmental rape': 'Emmental ou emmenthal râpé', 'salade': 'Salade verte, crue, sans assaisonnement', 'salade verte': 'Salade verte, crue, sans assaisonnement', 'salade tomate': 'Tomate, crue',
-  'eau': 'Eau du robinet', 'eau robinet': 'Eau du robinet', 'eau plate': 'Eau minérale, plate (aliment moyen)', 'eau minerale': 'Eau minérale (aliment moyen)',
-  'eau gazeuse': 'Eau minérale, gazeuse (aliment moyen)', 'eau petillante': 'Eau minérale, gazeuse (aliment moyen)', 'bouteille eau': 'Eau minérale, plate (aliment moyen)',
-  'puree': 'Pomme de terre, purée (aliment moyen)', 'puree pomme terre': 'Pomme de terre, purée (aliment moyen)',
+  'yaourt hipro': 'Skyr / yaourt protéiné nature (type HiPro)', 'fromage': 'Fromage (aliment moyen)', 'fromage rape': "Emmental ou emmenthal, râpé", 'gruyere rape': "Emmental ou emmenthal, râpé",
+  'emmental rape': "Emmental ou emmenthal, râpé", 'salade': 'Salade verte, crue, sans assaisonnement', 'salade verte': 'Salade verte, crue, sans assaisonnement', 'salade tomate': "Tomate ronde, crue",
+  'tomate crue': "Tomate ronde, crue", 'salade crue': 'Salade verte, crue, sans assaisonnement',
+  'eau': 'Eau du robinet', 'eau robinet': 'Eau du robinet', 'eau plate': "Eau minérale, embouteilée, plate (aliment moyen)", 'eau minerale': 'Eau minérale (aliment moyen)',
+  'eau gazeuse': "Eau minérale, embouteilée, gazeuse (aliment moyen)", 'eau petillante': "Eau minérale, embouteilée, gazeuse (aliment moyen)", 'bouteille eau': "Eau minérale, embouteilée, plate (aliment moyen)",
+  'puree': "Purée de pomme de terre (aliment moyen)", 'puree pomme terre': "Purée de pomme de terre (aliment moyen)",
 };
-const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|légumineuses|légumes|pommes de terre/;
+const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|oeufs|légumineuses|légumes|pommes de terre/;
 
 /* --- Protéines en poudre & produits sportifs ---
    Valeurs pour 100 g relevées sur les étiquettes / sites des marques (≈, selon le parfum).
@@ -1815,7 +1867,7 @@ const GROUP_PORTION = [
   [/produits laitiers frais|desserts|crèmes dessert/, 125], [/fromages/, 30], [/pains/, 60], [/viennoiseries/, 60], [/plats composés|salades composées/, 300],
   [/pizzas/, 150], [/sandwichs/, 250], [/soupes/, 300], [/boisson|laits|eaux/, 250], [/gâteaux/, 80],
   [/biscuits sucrés|biscuits apéritifs|barres/, 30], [/céréales de petit/, 40], [/chocolats|confiseries/, 30], [/sauces|condiments|confitures/, 20],
-  [/huiles|beurres|margarines|matières grasses|sucres, miels/, 10], [/fruits à coque/, 30], [/œufs/, 55], [/glaces|desserts glacés|sorbets/, 100],
+  [/huiles|beurres|margarines|matières grasses|sucres, miels/, 10], [/fruits à coque/, 30], [/œufs|oeufs/, 55], [/glaces|desserts glacés|sorbets/, 100],
   [/compléments/, 30], [/fast food/, 250],
 ];
 function defaultPortion(f) {
@@ -1838,34 +1890,34 @@ const EMOJIS = [
   [/huile|beurre|margarine/, '🫒'], [/amande|noix|cacahuete|noisette|pistache/, '🥜'], [/sauce|ketchup|mayo/, '🥫'], [/soupe|potage/, '🍲'], [/miel|sucre|confiture/, '🍯'],
 ];
 const foodEmoji = f => f.emoji || (EMOJIS.find(([re]) => re.test(normTxt(f.name))) || [null, '🍽️'])[1];
-/* "Riz blanc, cuit, non salé" → court "Riz blanc", détail "cuit, non salé" */
+/* "Riz blanc, cuit, sans sel ajouté" → court "Riz blanc", détail "cuit, non salé" */
 function splitName(f) {
   if (f.short) return { short: f.short, sub: f.sub || '' };
   const i = f.name.indexOf(', ');
   const short = i > 0 ? f.name.slice(0, i) : f.name;
   let sub = i > 0 ? f.name.slice(i + 2) : '';
   if (f.src === 'perso') sub = sub || '⭐ mon aliment';
-  if (f.src === 'off') sub = sub || '🏷️ produit de marque';
+  if (f.src === 'off') sub = '🏷️ Open Food Facts' + (f.code ? ' · ' + f.code : '');
   if (f.note) sub = f.note;
   return { short: short.length > 46 ? short.slice(0, 44) + '…' : short, sub: sub.length > 44 ? sub.slice(0, 42) + '…' : sub };
 }
 /* Aliment inconnu : on choisit en touchant ce qui ressemble le plus */
 const FOOD_CATS = [
-  ['🥩', 'Viande', 'Viande cuite (aliment moyen)'], ['🐟', 'Poisson', 'Poisson cuit (aliment moyen)'], ['🍝', 'Pâtes / riz', 'Pâtes sèches standard, cuites, non salées'],
+  ['🥩', 'Viande', 'Viande cuite (aliment moyen)'], ['🐟', 'Poisson', 'Poisson cuit (aliment moyen)'], ['🍝', 'Pâtes / riz', "Pâtes sèches, standard, cuites, sans sel ajouté"],
   ['🍲', 'Plat maison', 'Plat cuisiné maison (moyenne)'], ['🥔', 'Pommes de terre', 'Pomme de terre, cuite (aliment moyen)'], ['🥦', 'Légumes', 'Légume cuit (aliment moyen)'],
-  ['🍎', 'Fruit', 'Fruit cru (aliment moyen)'], ['🥛', 'Yaourt / laitage', 'Yaourt, lait fermenté ou spécialité laitière, nature'], ['🧀', 'Fromage', 'Fromage (aliment moyen)'],
+  ['🍎', 'Fruit', 'Fruit cru (aliment moyen)'], ['🥛', 'Yaourt / laitage', "Yaourt ou lait fermenté, nature"], ['🧀', 'Fromage', 'Fromage (aliment moyen)'],
   ['🥖', 'Pain', 'Pain (aliment moyen)'], ['🥣', 'Céréales', 'Céréales pour petit déjeuner (aliment moyen)'], ['🍪', 'Gâteau', 'Gâteau (aliment moyen)'],
-  ['🍫', 'Chocolat / sucré', 'Chocolat au lait, tablette'], ['🍔', 'Fast-food', 'Hamburger, provenant de fast food'], ['🍕', 'Pizza', 'Pizza au fromage ou Pizza margherita, préemballée'],
+  ['🍫', 'Chocolat / sucré', 'Chocolat au lait, tablette'], ['🍔', 'Fast-food', "Hamburger, de restauration rapide"], ['🍕', 'Pizza', "Pizza au fromage ou pizza margherita, préemballée"],
   ['🥤', 'Boisson sucrée', 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)'], ['🍨', 'Dessert', 'Crème dessert, rayon frais ou appertisée (aliment moyen)'], ['💪', 'Protéine', null],
 ];
 
 /* Mes aliments (valeurs saisies depuis l'étiquette) : cherchés en premier, avec la marque */
 function searchCustom(query) {
-  const q = tokensOf(query);
+  const q = fixTokens(tokensOf(query));
   if (!q.length || !state.customFoods.length) return [];
   const out = [];
   for (const f of state.customFoods) {
-    const ft = tokensOf(f.name);
+    const ft = tokensOf(f.name + ' ' + (f.aliases || []).join(' '));
     let matched = 0;
     for (const w of q) if (ft.some(t => t === w || t.startsWith(w) || w.startsWith(t))) matched++;
     const cover = matched / q.length, back = matched / ft.length;
@@ -1882,7 +1934,7 @@ function searchAll(query) {
 }
 function searchCiqual(query, limit = 8) {
   if (!ciqual) return [];
-  const q = tokensOf(query);
+  const q = fixTokens(tokensOf(query));
   if (!q.length) return [];
   const nq = normTxt(query);
   const wantsRaw = /\bcru/.test(nq);
@@ -1915,7 +1967,7 @@ function searchCiqual(query, limit = 8) {
   res.sort((a, b) => b.score - a.score);
   return res.slice(0, limit);
 }
-const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 },
+const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0, ...(f.f ? { f: f.f } : {}) },
   ...(f.portion ? { portion: f.portion, portionName: f.portionName } : {}), ...(f.note ? { note: f.note } : {}), ...(f.r05 ? { r05: true } : {}) });
 
 /* --- Open Food Facts (marques) --- */
@@ -2026,7 +2078,7 @@ function parseFoodText(text) {
 /* --- calculs --- */
 const macroOf = (food, grams) => {
   const k = grams / 100;
-  const r = food.r05 ? v => Math.round(v * 2) / 2 : v => Math.round(v * 10) / 10; // certains aliments : macros à 0,5 g près
+  const r = v => Math.round(v * 2) / 2; // macros arrondies à 0,5 g près, kcal à l'unité
   return { kcal: Math.round(food.per100.kcal * k), p: r(food.per100.p * k), g: r(food.per100.g * k), l: r(food.per100.l * k) };
 };
 const fmtG = v => (Math.round(v * 10) / 10).toString().replace('.', ',');
@@ -2161,6 +2213,15 @@ function isLiquid(f) {
   if (f.grp) return LIQUID_GRP.test(f.grp);
   return LIQUID_NAME.test(n);
 }
+/* Cohérence : kcal ≈ 4 × protéines + 9 × lipides + 4 × glucides (+ 2 × fibres si connues).
+   Écart de plus de 15 % → « à vérifier » (sauf boissons alcoolisées et aliments très peu caloriques) */
+function macroCheck(f) {
+  const v = f && (f.per100 || f);
+  if (!v || !(v.kcal >= 40) || /alcool/.test(f.grp || '')) return true;
+  const e = 4 * (v.p || 0) + 9 * (v.l || 0) + 4 * (v.g || 0) + 2 * (v.f || 0);
+  return Math.abs(v.kcal - e) / v.kcal <= 0.15;
+}
+const checkBadge = f => (macroCheck(f) ? '' : '<em class="chk" title="Calories et macros ne collent pas (écart de plus de 15 %)">⚠ à vérifier</em>');
 const fmtL = ml => `${(Math.round(ml) / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 3 })} L`;
 const fmtQty = (g, liq) => (liq ? fmtL(g) : `${fmtNum(g)} g`);
 
@@ -2178,7 +2239,7 @@ function applyGrams(it) {
 /* "grec frites", "steak frites" : inconnu en un seul mot → plusieurs aliments connus */
 function splitCombo(p) {
   if (p.gramsSrc === 'text' || isProteinText(normTxt(p.query), p.brand) || searchAll(p.query).length) return [p];
-  const tk = tokensOf(p.query);
+  const tk = fixTokens(tokensOf(p.query));
   if (tk.length < 2) return [p];
   const keys = [];
   for (let i = 0; i < tk.length;) {
@@ -2233,7 +2294,7 @@ function tileHtml(f, i, j, on) {
   return `<button type="button" class="ftile ${on ? 'on' : ''} casc" style="--j:${j}" data-pick="${i}:${j}">
       <span class="ft-emo">${foodEmoji(f)}</span>
       <span class="ft-name">${esc(short)}</span>
-      ${sub ? `<span class="ft-sub">${esc(sub)}</span>` : ''}
+      ${sub ? `<span class="ft-sub">${esc(sub)}</span>` : ''}${checkBadge(f)}
       <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>${isLiquid(f) ? `pour ${fmtL(d)}` : `par ${f.portionName || 'dose'} de ${d} g`}</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>${isLiquid(f) ? 'pour 100 ml' : 'pour 100 g'}</small>`}</span>
       ${on ? '<span class="ft-check">✓</span>' : ''}
     </button>`;
@@ -2255,7 +2316,9 @@ function qtyHtml(it, i, f) {
   if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} ${f.portionName || 'dose'}${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
   else {
     const b = defaultPortion(f), r = b <= 30 ? 5 : 10;
-    chips = [...new Set([0.5, 1, 1.5, 2].map(k => Math.max(r, Math.round((b * k) / r) * r)))].map(v => [v, `${v} g`, '']);
+    const seen = new Set();
+    chips = [0.5, 1, 1.5, 2].map(k => [Math.max(r, Math.round((b * k) / r) * r), k]).filter(([v]) => !seen.has(v) && seen.add(v))
+      .map(([v, k]) => [v, k === 0.5 ? '½ portion' : k === 1 ? '1 portion' : `${String(k).replace('.', ',')} portions`, `${v} g`]);
   }
   return `
       <div class="fqty">
@@ -2286,6 +2349,7 @@ function labelFormHtml(it, i) {
       </div>`;
 }
 function foodCardHtml(it, i) {
+  if (it.kind === 'dish') return dishCardHtml(it, i);
   const f = it.cands[it.sel];
   const mac = f && it.grams ? macroOf(f, it.grams) : null;
   const nm = f ? splitName(f) : null;
@@ -2309,7 +2373,7 @@ function foodCardHtml(it, i) {
     <div class="fcard ${f ? (it.open ? 'choose' : 'ok') : 'unknown'} enter" style="--i:${Math.min(i, 6)}" data-row="${i}">
       <div class="fc-head">
         ${f ? `<span class="fc-emo">${foodEmoji(f)}</span>
-        <div class="fc-main"><b>${esc(nm.short)}</b><span>${esc(nm.sub || '')}</span></div>
+        <div class="fc-main"><b>${esc(nm.short)}</b><span>${esc(nm.sub || '')}</span>${checkBadge(f)}</div>
         <div class="fc-kcal"><b>${mac ? fmtNum(mac.kcal) : '–'}</b><span>kcal</span></div>`
         : `<span class="fc-emo">${it.loading ? '⟳' : '❓'}</span>
         <div class="fc-main"><b>${esc(capFirst(it.query))}</b><span>${it.loading ? 'Je cherche le produit…' : 'Je ne connais pas encore cet aliment'}</span></div>`}
@@ -2326,6 +2390,331 @@ function foodCardHtml(it, i) {
         <button type="button" class="flink" data-manual="${i}">${it.manual ? '✕ Fermer l’étiquette' : '✎ J’ai l’étiquette'}</button>
       </div>
     </div>`;
+}
+
+/* =========================================================
+   PLATS COMPOSÉS : détail ingrédient par ingrédient
+   - ⭐ Mon plat : déjà enregistré (trouvé tout de suite, sans IA)
+   - 🤖 Estimation IA : découpé par Claude via le relais (clé jamais dans l'app)
+   - 📋 Recette type : recette française standard, quand l'IA n'est pas disponible
+   ========================================================= */
+const r05 = v => Math.round(v * 2) / 2;
+const ciqFind = re => (ciqual || []).find(f => re.test(f.n));
+const ciqByName = n => (ciqual || []).find(f => f.n === n);
+const per100Of = f => ({ kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0, ...(f.f ? { f: f.f } : {}) });
+function ingFrom(f, g, src = 'Ciqual') { return f ? { nom: f.n, g: Math.round(g), per100: per100Of(f), src, ...(f.note ? { est: true } : {}) } : null; }
+const ingMac = ing => { const k = ing.g / 100; return { kcal: ing.per100.kcal * k, p: ing.per100.p * k, l: ing.per100.l * k, g: ing.per100.g * k }; };
+const DISH_BADGE = { ia: '🤖 Estimation IA', recette: '📋 Recette type · estimation', perso: '⭐ Mon plat' };
+
+/* recalcule l'aliment « total » du plat (valeurs pour 100 g, portion = poids total) */
+function refreshDish(it) {
+  const d = it.dish;
+  const tot = d.ings.reduce((t, x) => { const m = ingMac(x); t.kcal += m.kcal; t.p += m.p; t.l += m.l; t.g += m.g; t.w += x.g; return t; }, { kcal: 0, p: 0, l: 0, g: 0, w: 0 });
+  const w = Math.max(1, tot.w);
+  it.cands = d.ings.length ? [{ id: 'd' + normTxt(d.nom).replace(/ /g, ''), name: d.nom, src: d.kind, isDish: true, emoji: d.emoji || '🍽️',
+    per100: { kcal: (tot.kcal / w) * 100, p: (tot.p / w) * 100, g: (tot.g / w) * 100, l: (tot.l / w) * 100 }, portion: Math.round(tot.w), portionName: 'portion',
+    ...(d.kind !== 'perso' ? { note: d.kind === 'ia' ? 'Estimation IA' : 'Recette type, estimation' } : {}) }] : [];
+  it.sel = 0;
+  it.grams = Math.round(tot.w * (it.mult || 1));
+  it.gramsSrc = 'user'; it.estimated = false;
+}
+function makeDishItem(text, nom, ings, kind, emoji) {
+  const it = { kind: 'dish', text, query: text, dish: { nom, ings: ings.filter(Boolean), kind, emoji }, mult: 1, cands: [], sel: 0, open: false, form: {}, count: 1 };
+  refreshDish(it);
+  return it;
+}
+
+/* ---------- Recettes types (portions standard en restauration rapide en France, estimations) ---------- */
+const WORD_N = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4 };
+const TACOS_MEATS = [
+  [/cordon/, () => ciqByName('Cordon bleu de volaille, préemballé'), 'cordon bleu'],
+  [/kebab|doner|grec/, () => ciqByName('Kebab veau-dinde'), 'kebab'],
+  [/merguez/, () => ciqFind(/^Merguez.*cuite/) || ciqFind(/^Merguez/), 'merguez'],
+  [/hach|steak|boeuf|burger/, () => ciqByName('Boeuf, steak haché 15% MG cuit'), 'viande hachée'],
+  [/nugget|tender|crispy/, () => ciqFind(/^Nuggets ou croquette panée de volaille/), 'nuggets'],
+  [/poulet|chicken|escalope|tandoori|curry|marine/, () => ciqByName('Poulet, filet sans peau grillé/poêlé'), 'poulet'],
+];
+const EXTRA_SAUCES = [
+  [/algerien/, /^Sauce algérienne/], [/samourai/, /^Sauce samouraï/], [/andalous/, /^Sauce andalouse/], [/blanche|kebab|biggy/, /^Sauce kebab/],
+  [/burger/, /^Sauce burger/], [/mayo/, /^Mayonnaise \(70/], [/ketchup/, /^Ketchup, préemballé/], [/barbecue|bbq/, /^Sauce barbecue/], [/harissa/, /^Harissa/],
+];
+function recipeTacos(text) {
+  const n = normTxt(text);
+  const m = n.match(/(\d+|un|une|deux|trois|quatre)\s*viandes?/);
+  const size = (n.match(/\b(xxl|xl|l|m)\b/) || [])[1];
+  const count = m ? (WORD_N[m[1]] || +m[1]) : size === 'xxl' ? 4 : size === 'xl' ? 3 : size === 'l' ? 2 : 1;
+  const meats = [];
+  TACOS_MEATS.map(([re, get, lab]) => ({ i: n.search(re), get, lab })).filter(x => x.i >= 0).sort((a, b) => a.i - b.i).forEach(x => meats.push(x));
+  if (!meats.length) meats.push({ get: TACOS_MEATS[5][1], lab: 'poulet' });
+  const each = count === 1 ? 120 : 100;
+  const ings = [ingFrom(ciqByName('Tortilla souple (à garnir), à base de blé'), count >= 3 ? 110 : 90)];
+  for (let k = 0; k < count; k++) ings.push(ingFrom(meats[k % meats.length].get(), each));
+  if (!/sans frite/.test(n)) ings.push(ingFrom(ciqByName('Frites de pommes de terre, surgelées, cuites en friteuse'), 120));
+  if (!/sans sauce fromag/.test(n)) ings.push(ingFrom(ciqByName('Sauce fromagère (type tacos)'), 70));
+  for (const [re, ref] of EXTRA_SAUCES) if (re.test(n)) ings.push(ingFrom(ciqFind(ref), 25));
+  if (/cheddar|gratine|fromage (rape|en plus)/.test(n)) ings.push(ingFrom(ciqByName('Cheddar'), 20));
+  // fusionner les viandes identiques
+  const merged = [];
+  for (const x of ings.filter(Boolean)) { const o = merged.find(y => y.nom === x.nom); if (o) o.g += x.g; else merged.push(x); }
+  const labs = [...new Set(meats.slice(0, count).map(x => x.lab))].join(', ');
+  return makeDishItem(text, `Tacos ${count} viande${count > 1 ? 's' : ''} (${labs})`, merged, 'recette', '🌯');
+}
+const KEBAB_MEAT = [[/veau.*dinde|dinde.*veau/, 'Kebab veau-dinde'], [/boeuf.*agneau|agneau.*boeuf/, 'Kebab bœuf-agneau'], [/poulet/, 'Kebab poulet'], [/dinde/, 'Kebab dinde'], [/veau/, 'Kebab veau'], [/boeuf/, 'Kebab bœuf'], [/agneau/, 'Kebab agneau']];
+function recipeAssietteKebab(text) {
+  const n = normTxt(text);
+  const meat = (KEBAB_MEAT.find(([re]) => re.test(n)) || [null, 'Kebab veau-dinde'])[1];
+  const riz = /\briz\b/.test(n), frites = /frite/.test(n) || !riz;
+  const ings = [ingFrom(ciqByName(meat), 180)];
+  if (frites) ings.push(ingFrom(ciqByName('Frites de pommes de terre, surgelées, cuites en friteuse'), riz ? 120 : 200));
+  if (riz) ings.push(ingFrom(ciqByName('Riz blanc, cuit, sans sel ajouté'), 150));
+  if (!/sans salade|sans crudite/.test(n)) {
+    ings.push(ingFrom(ciqByName('Salade verte, crue, sans assaisonnement'), 40));
+    ings.push(ingFrom(ciqByName('Tomate ronde, crue'), 40));
+    ings.push(ingFrom(ciqByName('Oignon, cru'), 20));
+  }
+  if (!/sans sauce/.test(n)) {
+    const extra = EXTRA_SAUCES.find(([re]) => re.test(n));
+    ings.push(ingFrom(extra ? ciqFind(extra[1]) : ciqFind(/^Sauce kebab/), 40));
+  }
+  if (/\bpain\b|pita/.test(n)) ings.push(ingFrom(ciqByName('Pain pita'), 60));
+  return makeDishItem(text, `Assiette kebab ${meat.replace(/^Kebab /, '')}`, ings, 'recette', '🍽️');
+}
+const RECIPES = [
+  [/\btacos?\b/, recipeTacos],
+  [/\bassiette\b.*\b(kebab|grec|grecque|doner)\b|\b(kebab|grec|doner)\b.*\bassiette\b/, recipeAssietteKebab],
+];
+const recipeFor = text => { const n = normTxt(text); const r = RECIPES.find(([re]) => re.test(n)); return r ? r[1] : null; };
+
+/* ---------- Mes plats enregistrés ---------- */
+function persoDishFor(text) {
+  const r = searchCustom(text).find(x => Array.isArray(x.f.ingredients) && x.f.ingredients.length && x.cover >= 0.8);
+  if (!r) return null;
+  const f = r.f;
+  const it = makeDishItem(text, f.name, f.ingredients.map(x => ({ nom: x.nom, g: x.g, per100: { ...x.per100 }, src: x.src })), 'perso', f.emoji || '⭐');
+  it.persoId = f.id;
+  return it;
+}
+function saveDishAsPerso(it) {
+  const d = it.dish;
+  const f = it.cands[0];
+  if (!f) return null;
+  const name = d.nom.slice(0, 80);
+  const alias = normTxt(it.text || '').slice(0, 80);
+  const old = state.customFoods.find(x => normTxt(x.name) === normTxt(name));
+  const aliases = [...new Set([alias, ...((old && old.aliases) || [])].filter(Boolean))].slice(0, 5);
+  const cf = { id: uid(), name, ts: Date.now(), u: Date.now(), portion: f.portion, emoji: d.emoji || '🍽️', aliases,
+    per100: { kcal: Math.round(f.per100.kcal * 10) / 10, p: Math.round(f.per100.p * 10) / 10, g: Math.round(f.per100.g * 10) / 10, l: Math.round(f.per100.l * 10) / 10 },
+    ingredients: d.ings.map(x => ({ nom: x.nom.slice(0, 80), g: Math.round(x.g), src: x.src, per100: { kcal: x.per100.kcal, p: x.per100.p, g: x.per100.g, l: x.per100.l } })) };
+  state.customFoods.filter(x => normTxt(x.name) === normTxt(name)).forEach(x => tomb(x.id));
+  state.customFoods = state.customFoods.filter(x => normTxt(x.name) !== normTxt(name)).concat(cf);
+  save();
+  if (typeof buildVocab === 'function' && ciqual) buildVocab();
+  return cf;
+}
+
+/* ---------- Analyse IA (via le relais Cloudflare) ---------- */
+const IA_CACHE_KEY = 'monSysteme.iaCache';
+const aiReady = () => !!(prefs.iaUrl && prefs.iaCode);
+function aiCacheGet(k) { try { const c = JSON.parse(localStorage.getItem(IA_CACHE_KEY) || '{}'); return c[k] ? c[k].plat : null; } catch (_) { return null; } }
+function aiCachePut(k, plat) {
+  try {
+    const c = JSON.parse(localStorage.getItem(IA_CACHE_KEY) || '{}');
+    c[k] = { plat, ts: Date.now() };
+    const keys = Object.keys(c).sort((a, b) => c[b].ts - c[a].ts);
+    for (const x of keys.slice(100)) delete c[x];
+    localStorage.setItem(IA_CACHE_KEY, JSON.stringify(c));
+  } catch (_) {}
+}
+const IA_ERR = {
+  code: 'Code d’accès refusé (Réglages → Analyse IA).', origine: 'Le relais refuse cette adresse.', limite: 'Limite d’analyses IA atteinte pour aujourd’hui.',
+  cle_absente: 'La clé API n’est pas installée dans le relais.', cle_invalide: 'La clé API du relais est invalide.', refus: 'L’IA a refusé cette demande.',
+  surcharge: 'L’IA est surchargée, réessaie dans un instant.', connexion: 'Le relais n’arrive pas à joindre l’IA.', texte: 'Texte trop court.',
+};
+async function aiAnalyze(text) {
+  const k = normTxt(text);
+  const cached = aiCacheGet(k);
+  if (cached) return cached;
+  if (!aiReady()) throw new Error('Analyse IA non configurée (Réglages → Analyse IA).');
+  if (!navigator.onLine) throw new Error('Pas de connexion Internet.');
+  const today = todayKey();
+  const used = prefs.iaDay === today ? prefs.iaCount || 0 : 0;
+  if (used >= (prefs.iaMax || 30)) throw new Error(IA_ERR.limite);
+  const ctrl = new AbortController(), tm = setTimeout(() => ctrl.abort(), 50000);
+  let r, j = {};
+  try {
+    r = await fetch(prefs.iaUrl, { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Code-Acces': prefs.iaCode }, body: JSON.stringify({ texte: text.slice(0, 200) }) });
+    j = await r.json().catch(() => ({}));
+  } catch (e) { throw new Error('Le relais IA ne répond pas.'); } finally { clearTimeout(tm); }
+  if (Number.isFinite(j.utilises)) { prefs.iaDay = today; prefs.iaCount = j.utilises; prefs.iaMax = j.max || prefs.iaMax; savePrefs(); }
+  if (!r.ok) throw new Error(IA_ERR[j.erreur] || `Erreur du relais (${r.status}).`);
+  const plat = j.plat;
+  if (!plat || !Array.isArray(plat.ingredients)) throw new Error('Réponse de l’IA illisible.');
+  if (!plat.ingredients.length) throw new Error('L’IA n’a pas reconnu d’aliment.');
+  aiCachePut(k, plat);
+  return plat;
+}
+/* rattache chaque ingrédient de l'IA à Ciqual quand la valeur colle, sinon garde l'estimation IA */
+function dishFromAi(text, plat) {
+  const ings = plat.ingredients.filter(x => x && x.nom && x.grammes > 0).slice(0, 25).map(x => {
+    const g = Math.min(2000, x.grammes);
+    const ai100 = { kcal: (x.kcal * 100) / g, p: (x.prot * 100) / g, l: (x.lip * 100) / g, g: (x.gluc * 100) / g };
+    // rattachement prudent à Ciqual : même mot principal, mêmes nombres (ex. « 15 % MG ») et énergie proche ;
+    // sinon on garde l'estimation de l'IA
+    const qn = normTxt(x.nom), qt = fixTokens(tokensOf(x.nom)), nums = qn.match(/\d+/g) || [];
+    const opts = searchCiqual(x.nom, 6).filter(r => r.cover >= 0.75).map(r => ({ f: r.f, exact: r.f._n === qn, head: r.f._t[0] === qt[0], nums: nums.every(k => r.f._n.includes(k)),
+      d: Math.abs(r.f.kcal - ai100.kcal) / Math.max(r.f.kcal, ai100.kcal, 1) }));
+    const best = opts.find(o => o.exact && o.d <= 0.35) || opts.find(o => o.head && o.nums && o.d <= 0.25) || opts.find(o => o.head && o.nums && o.d <= 0.35);
+    if (best) return { nom: best.f.n, g, per100: per100Of(best.f), src: 'Ciqual', ia: x.nom };
+    return { nom: x.nom, g, per100: ai100, src: 'IA' };
+  });
+  return makeDishItem(text, String(plat.nom || text).slice(0, 80), ings, 'ia', '🍽️');
+}
+
+/* ---------- Carte d'un plat ---------- */
+function dishCardHtml(it, i) {
+  const d = it.dish, f = it.cands[0];
+  const mac = f && it.grams ? macroOf(f, it.grams) : null;
+  if (it.loading) return `<div class="fcard dish loading" data-row="${i}"><div class="fc-head"><span class="fc-emo">🤖</span><div class="fc-main"><b>${esc(capFirst(it.text))}</b><span>Analyse du plat par l’IA…</span></div><button type="button" class="fc-x" data-rm="${i}" aria-label="Retirer">✕</button></div><div class="dish-wait"><i></i><i></i><i></i></div></div>`;
+  const sum = d.ings.reduce((t, x) => t + x.g, 0);
+  return `
+    <div class="fcard dish ok" data-row="${i}">
+      <div class="fc-head">
+        <span class="fc-emo">${d.emoji || '🍽️'}</span>
+        <div class="fc-main"><b>${esc(d.nom)}</b><span class="dish-badge b-${d.kind}">${DISH_BADGE[d.kind]}</span></div>
+        <div class="fc-kcal"><b>${mac ? fmtNum(mac.kcal) : '–'}</b><span>kcal</span></div>
+        <button type="button" class="fc-x" data-rm="${i}" aria-label="Retirer">✕</button>
+      </div>
+      ${it.text && normTxt(it.text) !== normTxt(d.nom) ? `<div class="fc-said">« ${esc(it.text)} »</div>` : ''}
+      ${it.error ? `<div class="dish-err">⚠ ${esc(it.error)}</div>` : ''}
+      <div class="dings">${d.ings.map((x, j) => { const m = ingMac(x); return `
+        <div class="ding">
+          <div class="di-name"><b>${esc(x.nom)}</b><small>${x.src === 'IA' ? '🤖 IA' : x.src === 'Ciqual' ? 'Ciqual' : esc(x.src)}${x.est ? ' · estimation' : ''}</small>${checkBadge(x)}</div>
+          <div class="di-g"><button type="button" data-dg="${i}:${j}:-10" aria-label="Moins">−</button><input inputmode="decimal" data-dgi="${i}:${j}" value="${Math.round(x.g)}"><span>g</span><button type="button" data-dg="${i}:${j}:10" aria-label="Plus">+</button></div>
+          <b class="di-k">${fmtNum(m.kcal)}</b>
+          <button type="button" class="di-x" data-drm="${i}:${j}" aria-label="Retirer l'ingrédient">✕</button>
+        </div>`; }).join('')}</div>
+      <div class="dadd"><input class="input" data-dadd-in="${i}" placeholder="＋ Ajouter un ingrédient (ex. 20 g cheddar)"><button type="button" class="btn small" data-dadd="${i}">Ajouter</button></div>
+      <div class="fc-mac">${mac ? `<span class="mp">Prot. <b>${fmtG(mac.p)}</b> g</span><span class="ml">Lip. <b>${fmtG(mac.l)}</b> g</span><span class="mg">Gluc. <b>${fmtG(mac.g)}</b> g</span>` : ''}</div>
+      <div class="fchips">${[0.5, 1, 1.5, 2].map(k => `<button type="button" class="fchip ${Math.abs((it.mult || 1) - k) < 0.01 ? 'on' : ''}" data-dmult="${i}:${k}">${k === 0.5 ? '½ portion' : k === 1 ? '1 portion' : String(k).replace('.', ',') + ' portions'}<small>${fmtNum(sum * k)} g</small></button>`).join('')}</div>
+      <div class="fc-actions">
+        <button type="button" class="flink" data-dsave="${i}">💾 Enregistrer comme aliment perso</button>
+        ${d.kind !== 'ia' && aiReady() ? `<button type="button" class="flink" data-dai="${i}">🤖 Analyser avec l’IA</button>` : ''}
+      </div>
+    </div>`;
+}
+
+/* =========================================================
+   CODE-BARRES : caméra du téléphone + Open Food Facts (API v2)
+   ========================================================= */
+const eanOk = c => {
+  if (!/^(\d{8}|\d{12,14})$/.test(c)) return false;
+  const d = c.split('').map(Number), chk = d.pop();
+  const s = d.reverse().reduce((t, x, i) => t + x * (i % 2 === 0 ? 3 : 1), 0);
+  return (10 - (s % 10)) % 10 === chk;
+};
+let zxingLoading = null;
+function loadZXing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (!zxingLoading) zxingLoading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'vendor/zxing-0.23.0.min.js';
+    s.onload = () => res(window.ZXing);
+    s.onerror = () => { zxingLoading = null; rej(new Error('Lecteur de code-barres indisponible')); };
+    document.head.appendChild(s);
+  });
+  return zxingLoading;
+}
+/* Ouvre la caméra ; renvoie le code lu (ou tapé), ou null */
+function openScanner() {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = 'scan-ov';
+    ov.innerHTML = `
+      <div class="scan-top"><span class="sheet-tag">[SYSTÈME] CODE-BARRES</span><button type="button" class="fs-close" data-scan-close="1" aria-label="Fermer">✕</button></div>
+      <div class="scan-view"><video playsinline muted autoplay></video><div class="scan-frame"><i class="scan-laser"></i></div></div>
+      <div class="scan-hint" id="scan-hint">Vise le code-barres du produit</div>
+      <div class="scan-manual"><input class="input" id="scan-code" inputmode="numeric" pattern="[0-9]*" maxlength="14" placeholder="ou tape les chiffres du code"><button type="button" class="btn primary" data-scan-ok="1">OK</button></div>`;
+    document.body.appendChild(ov);
+    let stream = null, timer = null, done = false, last = '', hits = 0;
+    const hint = txt => { const h = ov.querySelector('#scan-hint'); if (h) h.textContent = txt; };
+    const finish = code => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      if (stream) stream.getTracks().forEach(tr => tr.stop());
+      ov.remove();
+      resolve(code);
+    };
+    const manual = () => { const v = ov.querySelector('#scan-code').value.replace(/\D/g, ''); if (v.length >= 8) finish(v); else toast('Code trop court', 'Un code-barres a 8 ou 13 chiffres.', 'warn'); };
+    ov.addEventListener('click', e => { if (e.target.closest('[data-scan-close]')) finish(null); if (e.target.closest('[data-scan-ok]')) manual(); });
+    ov.querySelector('#scan-code').addEventListener('keydown', e => { if (e.key === 'Enter') manual(); });
+    (async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { hint('Caméra indisponible ici : tape les chiffres du code.'); return; }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      } catch (_) { hint('Caméra refusée : autorise-la (Réglages iPhone → Safari → Caméra) ou tape les chiffres.'); return; }
+      if (done) { stream.getTracks().forEach(tr => tr.stop()); return; }
+      const video = ov.querySelector('video');
+      video.srcObject = stream;
+      await video.play().catch(() => {});
+      let detect = null;
+      if ('BarcodeDetector' in window) {
+        try { const det = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] }); detect = async () => { const r = await det.detect(video); return r[0] && r[0].rawValue; }; } catch (_) { detect = null; }
+      }
+      if (!detect) {
+        let Z;
+        try { Z = await loadZXing(); } catch (e) { hint(e.message + ' : tape les chiffres du code.'); return; }
+        const hints = new Map();
+        hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E]);
+        hints.set(Z.DecodeHintType.TRY_HARDER, true);
+        const reader = new Z.MultiFormatReader();
+        reader.setHints(hints);
+        const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true });
+        detect = async () => {
+          const w = video.videoWidth, h = video.videoHeight;
+          if (!w) return null;
+          const cw = Math.round(w * 0.85), chh = Math.round(h * 0.5);
+          cv.width = cw; cv.height = chh;
+          cx.drawImage(video, (w - cw) / 2, (h - chh) / 2, cw, chh, 0, 0, cw, chh);
+          try { return reader.decodeWithState(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(cv)))).getText(); } catch (_) { return null; }
+        };
+      }
+      let busy = false;
+      timer = setInterval(async () => {
+        if (busy || done) return;
+        busy = true;
+        try {
+          const c = await detect();
+          if (c && eanOk(c)) { hits = c === last ? hits + 1 : 1; last = c; if (hits >= 2) { haptic(); sfx('success'); finish(c); } }
+        } catch (_) {}
+        busy = false;
+      }, 180);
+    })();
+  });
+}
+const OFF_CACHE_KEY = 'monSysteme.offCache';
+/* Produit par code-barres (Open Food Facts, API v2) — gardé en cache sur le téléphone */
+async function offProduct(code) {
+  try { const c = JSON.parse(localStorage.getItem(OFF_CACHE_KEY) || '{}'); if (c[code]) return c[code]; } catch (_) {}
+  const F = 'code,product_name,product_name_fr,brands,quantity,serving_size,serving_quantity,nutriments';
+  for (const c of [code, code.length === 12 ? '0' + code : null].filter(Boolean)) {
+    const j = await getJSON(`https://world.openfoodfacts.org/api/v2/product/${c}.json?fields=${F}`, 12000).catch(e => { if (/HTTP 404/.test(e.message)) return null; throw e; });
+    if (!j || j.status !== 1 || !j.product) continue;
+    const p = j.product, f = offFood(p);
+    if (!f) continue;
+    const n = p.nutriments || {};
+    if (Number.isFinite(+n.fiber_100g)) f.per100.f = +n.fiber_100g;
+    const q = String(p.quantity || '');
+    const sq = +p.serving_quantity;
+    const multi = q.match(/(\d+)\s*[x×]\s*(\d+(?:[.,]\d+)?)\s*(g|ml|cl)\b/i);
+    const portion = sq > 0 && sq <= 1000 ? sq : multi ? parseFloat(multi[2].replace(',', '.')) * (/cl/i.test(multi[3]) ? 10 : 1) : null;
+    if (portion) { f.portion = Math.round(portion); f.portionName = 'portion'; }
+    if (/\d\s*(ml|cl|l)\b/i.test(q)) f.liq = true;
+    f.code = c;
+    try { const cc = JSON.parse(localStorage.getItem(OFF_CACHE_KEY) || '{}'); cc[code] = f; const ks = Object.keys(cc); if (ks.length > 150) delete cc[ks[0]]; localStorage.setItem(OFF_CACHE_KEY, JSON.stringify(cc)); } catch (_) {}
+    return f;
+  }
+  return null;
 }
 
 function openFoodSheet(meal) {
@@ -2345,7 +2734,8 @@ function openFoodSheet(meal) {
         <textarea class="fs-text" id="food-text" rows="2" enterkeyhint="send" placeholder="Ex : ${esc(EX[Math.floor(Math.random() * EX.length)])}"></textarea>
         <button type="button" class="fs-go" data-analyse="1" aria-label="Analyser">⚡</button>
       </div>
-      <div class="fs-hint">Écris comme tu parles, même sans les grammes. 🎤 Tu peux aussi dicter avec le micro du clavier.</div>
+      <div class="fs-hint">Écris comme tu parles, même sans les grammes (« tacos 2 viandes », « 160 g kebab poulet »). 🎤 Tu peux aussi dicter.</div>
+      <button type="button" class="scan-btn" data-scan="1">📷 Scanner un code-barres</button>
       ${recents.length ? `<div class="fs-sec">⏱ Déjà mangé · touche pour ajouter</div>
       <div class="fs-recents">${recents.map((r, k) => `<button type="button" class="rchip" data-recent="${k}"><span>${foodEmoji(r.food)}</span><b>${esc(splitName(r.food).short)}</b><small>${fmtQty(r.grams, r.food.liq)}</small></button>`).join('')}</div>` : ''}
       <div id="food-rows"></div>
@@ -2373,6 +2763,11 @@ function openFoodSheet(meal) {
         const ml = mealLabel(mealSel);
         $('[data-food-save]', sheet).textContent = `✓ Ajouter ${ok.length > 1 ? `les ${ok.length} aliments ` : ''}${mealSel === 'collation' ? 'à la collation' : 'au ' + ml.label.toLowerCase()} ${ml.icon}`;
       };
+      const replaceItem = (old, list) => { const k = items.indexOf(old); if (k < 0) return; items.splice(k, 1, ...list); if (sheet.isConnected) draw(); };
+      const runAi = (ph, fallback) => {
+        aiAnalyze(ph.text).then(plat => { replaceItem(ph, [dishFromAi(ph.text, plat)]); sfx('tap'); })
+          .catch(err => { const fb = fallback(); if (fb[0] && fb[0].kind === 'dish') fb[0].error = err.message + ' Recette type à la place.'; replaceItem(ph, fb); toast('Analyse IA impossible', err.message, 'warn'); });
+      };
       const searchBrand = async (it, auto = false) => {
         if (!navigator.onLine) { if (!auto) toast('Pas de connexion', 'La recherche sur Internet demande une connexion.', 'warn'); return; }
         it.loading = true; draw();
@@ -2393,6 +2788,10 @@ function openFoodSheet(meal) {
             it.sel = perso.length || !had || !auto || it.brand ? 0 : it.cands.indexOf(had);
             it.open = true;
             applyGrams(it);
+          } else if (auto && !it.cands.length && aiReady()) {
+            it.loading = false;
+            const ph = { kind: 'dish', loading: true, text: it.text || it.query, query: it.query, dish: { nom: it.query, ings: [], kind: 'ia' }, cands: [], sel: 0, form: {} };
+            replaceItem(it, [ph]); runAi(ph, () => [it]); return;
           } else if (!auto) toast('Rien trouvé sur Internet', 'Touche le type d’aliment le plus proche, ou « J’ai l’étiquette ».', 'warn');
         } catch (e) {
           if (!auto) toast('Recherche impossible', 'Internet ne répond pas : choisis une case.', 'warn');
@@ -2405,19 +2804,41 @@ function openFoodSheet(meal) {
         const txt = ta.value.trim();
         if (!txt) { toast('Écris ce que tu as mangé', 'Ex : « 2 oeufs et un café » — ou touche un aliment déjà mangé.', 'warn'); ta.focus(); return; }
         try { await loadCiqual(); } catch (_) { toast('Base aliments indisponible', 'Réessaie avec Internet.', 'warn'); return; }
-        const fresh = parseFoodText(txt).flatMap(splitCombo).map(buildFoodItem);
+        const fresh = [], aiJobs = [];
+        // chaque partie séparée par une virgule / un retour à la ligne est analysée à part
+        const segs = txt.replace(/(\d),(\d)/g, '$1\u2024$2').split(/[\n;,]+/).map(s => s.replace(/\u2024/g, ',').trim()).filter(s => /[a-zà-ÿœ]{2,}/i.test(s));
+        for (const seg of segs) {
+          const mine = persoDishFor(seg);
+          if (mine) { fresh.push(mine); continue; }
+          const recipe = recipeFor(seg);
+          if (recipe) {
+            if (aiReady()) { const ph = { kind: 'dish', loading: true, text: seg, query: seg, dish: { nom: seg, ings: [], kind: 'ia' }, cands: [], sel: 0, form: {} }; fresh.push(ph); aiJobs.push([ph, () => [recipe(seg)]]); }
+            else fresh.push(recipe(seg));
+            continue;
+          }
+          for (const p of parseFoodText(seg)) {
+            const parts = splitCombo(p);
+            if (parts.length > 1 && aiReady()) { const ph = { kind: 'dish', loading: true, text: p.text, query: p.text, dish: { nom: p.text, ings: [], kind: 'ia' }, cands: [], sel: 0, form: {} }; fresh.push(ph); aiJobs.push([ph, () => parts.map(buildFoodItem)]); continue; }
+            for (const it of parts.map(buildFoodItem)) {
+              if (!it.cands.length && aiReady() && !it.brand && it.kind !== 'prot') { const ph = { kind: 'dish', loading: true, text: it.text || it.query, query: it.query, dish: { nom: it.query, ings: [], kind: 'ia' }, cands: [], sel: 0, form: {} }; fresh.push(ph); aiJobs.push([ph, () => [it]]); }
+              else fresh.push(it);
+            }
+          }
+        }
         if (!fresh.length) { toast('Je n’ai rien compris', 'Écris le nom des aliments, ex : « riz, poulet ».', 'warn'); return; }
+        for (const [ph, fallback] of aiJobs) runAi(ph, fallback);
         items = items.concat(fresh);
         ta.value = '';
         ta.blur();
         sfx('open'); haptic();
         draw();
         // produits de marque ou inconnus : recherche automatique sur Internet
-        fresh.filter(it => !(it.cands[0] && it.cands[0].src === 'perso') && (!it.cands.length || (it.brand && !catalogBrand(it.brand)) || (it.kind === 'food' && it.cover < 0.6))).forEach(it => searchBrand(it, true));
+        fresh.filter(it => it.kind !== 'dish' && !(it.cands[0] && it.cands[0].src === 'perso') && (!it.cands.length || (it.brand && !catalogBrand(it.brand)) || (it.kind === 'food' && it.cover < 0.6))).forEach(it => searchBrand(it, true));
         const first = $('#food-rows .fcard:nth-last-child(' + fresh.length + ')', sheet);
         if (first) setTimeout(() => first.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
       };
       $('#food-text', sheet).addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); analyse(); } });
+      sheet.addEventListener('keydown', e => { const di = e.target.closest && e.target.closest('[data-dadd-in]'); if (di && e.key === 'Enter') { e.preventDefault(); const b = sheet.querySelector(`[data-dadd="${di.dataset.daddIn}"]`); if (b) b.click(); } });
       const pair = s => { const [a, b] = s.split(':'); return [+a, b]; };
       sheet.addEventListener('click', async e => {
         const t = e.target;
@@ -2425,12 +2846,61 @@ function openFoodSheet(meal) {
         const mb = t.closest('[data-meal]');
         if (mb) { mealSel = mb.dataset.meal; sheet.querySelectorAll('[data-meal]').forEach(b => b.classList.toggle('on', b === mb)); haptic(); if (items.length) draw(); return; }
         if (t.closest('[data-analyse]')) { analyse(); return; }
+        if (t.closest('[data-scan]')) {
+          const code = await openScanner();
+          if (!code) return;
+          toast(`Code ${code}`, 'Recherche du produit dans Open Food Facts…');
+          let f = null;
+          try { f = await offProduct(code); } catch (_) { toast('Open Food Facts injoignable', 'Vérifie ta connexion, ou tape le nom du produit.', 'warn'); return; }
+          if (f) {
+            items.push({ text: `code-barres ${code}`, query: f.name, kind: 'food', cands: [f], sel: 0, open: false, form: {}, grams: f.portion || (isLiquid(f) ? 250 : 100), gramsSrc: 'food', estimated: !f.portion, unitless: true, count: 1 });
+            sfx('open'); draw();
+            const last = sheet.querySelector('#food-rows .fcard:last-child'); if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } else {
+            items.push({ text: `code-barres ${code}`, query: `Produit ${code}`, kind: 'food', cands: [], sel: -1, open: false, form: { name: `Produit ${code}` }, manual: true, count: 1, unitless: true });
+            draw();
+            toast('Produit inconnu', 'Il n’est pas dans Open Food Facts : entre les valeurs de l’étiquette.', 'warn');
+          }
+          return;
+        }
         const rc = t.closest('[data-recent]');
         if (rc) {
           const r = recents[+rc.dataset.recent];
           items.push({ text: '', query: r.food.name, grams: r.grams, gramsSrc: 'user', estimated: false, count: 1, cands: [r.food], sel: 0, open: false, kind: 'food', form: {} });
           rc.classList.add('added');
           sfx('tap'); haptic(); draw();
+          return;
+        }
+        const dg = t.closest('[data-dg]');
+        if (dg) { const [i, j, d] = dg.dataset.dg.split(':').map(Number), it = items[i], x = it.dish.ings[j]; x.g = Math.max(5, Math.min(3000, Math.round(x.g + d))); refreshDish(it); haptic(); draw(); return; }
+        const drm = t.closest('[data-drm]');
+        if (drm) { const [i, j] = drm.dataset.drm.split(':').map(Number), it = items[i]; it.dish.ings.splice(j, 1); refreshDish(it); haptic(); draw(); return; }
+        const dm = t.closest('[data-dmult]');
+        if (dm) { const [i, k] = dm.dataset.dmult.split(':'), it = items[+i]; it.mult = +k; refreshDish(it); haptic(); draw(); return; }
+        const dadd = t.closest('[data-dadd]');
+        if (dadd) {
+          const i = +dadd.dataset.dadd, it = items[i], inp = sheet.querySelector(`[data-dadd-in="${i}"]`), v = (inp.value || '').trim();
+          if (!v) { inp.focus(); return; }
+          const p = parseFoodText(v)[0];
+          const r = p && searchAll(p.query)[0];
+          if (!r) { toast('Ingrédient introuvable', 'Essaie un autre nom (ex. « cheddar », « sauce samouraï »).', 'warn'); return; }
+          const f = r.food;
+          it.dish.ings.push({ nom: f.name, g: p.grams || (f.portion && p.unitless ? f.portion * (p.count || 1) : defaultPortion(f)), per100: { ...f.per100 }, src: f.src === 'perso' ? 'Mes aliments' : f.src === 'ciqual' ? 'Ciqual' : f.src === 'off' ? 'OFF' : f.src });
+          refreshDish(it); sfx('tap'); haptic(); draw();
+          return;
+        }
+        const dsv = t.closest('[data-dsave]');
+        if (dsv) {
+          const it = items[+dsv.dataset.dsave];
+          const cf = saveDishAsPerso(it);
+          if (cf) { it.dish.kind = 'perso'; refreshDish(it); sfx('success'); haptic(); draw(); toast('Plat enregistré', `⭐ ${cf.name} : la prochaine fois, il est trouvé tout de suite (sans IA).`); }
+          return;
+        }
+        const dai = t.closest('[data-dai]');
+        if (dai) {
+          const it = items[+dai.dataset.dai];
+          const ph = { kind: 'dish', loading: true, text: it.text, query: it.query, dish: { nom: it.text, ings: [], kind: 'ia' }, cands: [], sel: 0, form: {} };
+          replaceItem(it, [ph]); runAi(ph, () => [it]);
           return;
         }
         const pk = t.closest('[data-pick]');
@@ -2557,6 +3027,8 @@ function openFoodSheet(meal) {
         }
       });
       sheet.addEventListener('change', e => {
+        const dgi = e.target.closest('[data-dgi]');
+        if (dgi) { const [i, j] = dgi.dataset.dgi.split(':').map(Number), it = items[i], v = parseFloat(dgi.value.replace(',', '.')); if (Number.isFinite(v) && v > 0) it.dish.ings[j].g = Math.min(3000, Math.round(v)); refreshDish(it); draw(); return; }
         const g = e.target.closest('[data-grams]');
         if (g) {
           let v = parseFloat(g.value.replace(',', '.'));
@@ -3635,13 +4107,22 @@ function renderSettings() {
       <div class="panel-head"><div class="panel-title">Mes aliments</div><div class="panel-sub">${state.customFoods.length}</div></div>
       ${state.customFoods.length ? state.customFoods.slice().sort((a, b) => a.name.localeCompare(b.name)).map(f => `
         <div class="setting-activity">
-          <div class="entry-emoji">⭐</div>
+          <div class="entry-emoji">${f.ingredients ? esc(f.emoji || '🍽️') : '⭐'}</div>
           <div class="entry-body">
             <div class="entry-title">${esc(f.name)}</div>
-            <div class="entry-meta">${Math.round(f.per100.kcal)} kcal · P ${fmtG(f.per100.p)} · G ${fmtG(f.per100.g)} · L ${fmtG(f.per100.l)} pour 100 g${f.portion ? ` · portion ${f.portion} g` : ''}</div>
+            <div class="entry-meta">${f.ingredients ? `Plat · ${f.ingredients.length} ingrédients · ${fmtNum((f.per100.kcal * (f.portion || 100)) / 100)} kcal la portion (${f.portion} g)` : `${Math.round(f.per100.kcal)} kcal · P ${fmtG(f.per100.p)} · G ${fmtG(f.per100.g)} · L ${fmtG(f.per100.l)} pour 100 g${f.portion ? ` · portion ${f.portion} g` : ''}`}</div>
           </div>
           <button class="icon-btn danger" data-del-cfood="${esc(f.id)}" aria-label="Supprimer">✕</button>
         </div>`).join('') : '<p class="small muted" style="margin:0">Aucun pour l\'instant. Quand un aliment est introuvable dans Repas, touche « ✎ Étiquette » et entre ses valeurs : il sera gardé ici.</p>'}
+    </section>
+
+    <section class="panel" id="ia-panel">
+      <div class="panel-head"><div class="panel-title">🤖 Analyse IA des plats</div><div class="panel-sub">${aiReady() ? 'activée' : 'désactivée'}</div></div>
+      <p class="small muted" style="margin:-4px 0 10px">Pour les plats composés (tacos, assiettes…) et les aliments introuvables, l'IA (Claude Haiku 5.5) découpe le plat en ingrédients. Ta clé API reste dans ton relais Cloudflare, jamais dans l'app. Mode d'emploi : dossier <b>relais-ia</b> du projet sur GitHub.</p>
+      <label class="field"><span>Adresse du relais</span><input class="input" data-iacfg="url" inputmode="url" autocomplete="off" placeholder="https://relais-ia-mon-systeme.….workers.dev" value="${esc(prefs.iaUrl || '')}"></label>
+      <label class="field"><span>Code d'accès</span><input class="input" type="password" data-iacfg="code" autocomplete="off" value="${esc(prefs.iaCode || '')}"></label>
+      <div class="btn-row"><button type="button" class="btn small" data-iatest="1">Tester le relais</button><button type="button" class="btn small ghost" data-iaclear="1">Vider le cache IA</button></div>
+      <div class="small muted" id="ia-status" style="margin-top:8px">${prefs.iaDay === todayKey() ? `Aujourd'hui : ${prefs.iaCount || 0} / ${prefs.iaMax || 30} analyses.` : ''}</div>
     </section>
 
     <section class="panel">
@@ -4641,6 +5122,16 @@ document.addEventListener('click', e => {
     });
     return;
   }
+  if (t.closest('#view [data-iatest]')) {
+    const st = $('#ia-status');
+    if (!aiReady()) { toast('Analyse IA', 'Entre l’adresse du relais et ton code d’accès.', 'warn'); return; }
+    st.textContent = 'Test du relais…';
+    fetch(prefs.iaUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Code-Acces': prefs.iaCode }, body: JSON.stringify({ quota: true }) })
+      .then(async r => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(IA_ERR[j.erreur] || `Erreur ${r.status}`); prefs.iaDay = todayKey(); prefs.iaCount = j.utilises; prefs.iaMax = j.max; savePrefs(); st.textContent = `✓ Relais OK · aujourd'hui : ${j.utilises} / ${j.max} analyses.`; sfx('success'); })
+      .catch(err => { st.textContent = '✕ ' + (err.message === 'Failed to fetch' ? 'Relais injoignable (adresse ?)' : err.message); sfx('fail'); });
+    return;
+  }
+  if (t.closest('#view [data-iaclear]')) { try { localStorage.removeItem(IA_CACHE_KEY); } catch (_) {} toast('Cache IA vidé', 'Les plats seront de nouveau analysés par l’IA (sauf ceux enregistrés).'); return; }
   const dcf = t.closest('#view [data-del-cfood]');
   if (dcf) {
     const f = state.customFoods.find(x => x.id === dcf.dataset.delCfood);
@@ -4787,6 +5278,13 @@ document.addEventListener('change', e => {
     prefs[e.target.dataset.pref] = e.target.checked;
     savePrefs();
     if (e.target.checked) { sfx('success'); haptic(); }
+    return;
+  }
+  if (e.target.dataset && e.target.dataset.iacfg) {
+    const v = e.target.value.trim();
+    if (e.target.dataset.iacfg === 'url') prefs.iaUrl = v.replace(/\/+$/, ''); else prefs.iaCode = v;
+    savePrefs();
+    toast('Analyse IA', aiReady() ? 'Réglage enregistré. Touche « Tester le relais ».' : 'Il manque l’adresse ou le code d’accès.');
     return;
   }
   if (e.target.dataset && e.target.dataset.wake) {

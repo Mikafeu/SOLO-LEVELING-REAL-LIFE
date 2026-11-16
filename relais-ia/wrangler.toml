@@ -1,0 +1,20 @@
+# Relais IA de « Mon Système » (Cloudflare Worker)
+name = "relais-ia-mon-systeme"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# nombre maximum d'analyses IA par jour (protection contre une facture surprise)
+MAX_PAR_JOUR = "30"
+# seule l'app peut appeler le relais
+ORIGINE_AUTORISEE = "https://mikafeu.github.io"
+# Secrets à ajouter dans Cloudflare (jamais ici) : ANTHROPIC_API_KEY et CODE_ACCES
+
+[[durable_objects.bindings]]
+name = "COMPTEUR"
+class_name = "Compteur"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Compteur"]
