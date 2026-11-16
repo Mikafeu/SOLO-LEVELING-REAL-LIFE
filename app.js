@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.2.0';
+const APP_VERSION = '3.3.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -244,6 +244,7 @@ function sanitizeState(raw) {
       kcal: num(m.kcal), p: num(m.p), g: num(m.g), l: num(m.l),
       src: typeof m.src === 'string' ? m.src.slice(0, 10) : 'manuel',
       ...(m.liq === true ? { liq: true } : {}),
+      ...(m.est === true ? { est: true } : {}),
     }));
   s.bilans = (Array.isArray(raw.bilans) ? raw.bilans : [])
     .filter(b => b && isValidKey(b.date) && (typeof b.good === 'string' || typeof b.bad === 'string'))
@@ -1609,6 +1610,19 @@ const EXTRA_FOODS = [
   { c: 'x8', n: 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', grp: 'boissons', kcal: 30, p: 0, g: 7.5, l: 0 },
   { c: 'x9', n: 'Plat cuisiné maison (moyenne)', grp: 'plats composés', kcal: 150, p: 8, g: 15, l: 6 },
   { c: 'x10', n: 'Skyr / yaourt protéiné nature (type HiPro)', grp: 'produits laitiers frais et assimilés', kcal: 58, p: 10, g: 3.8, l: 0.2 },
+  /* Kebab – viande seule (sans pain, sauce ni frites) · pour 100 g · portion 160 g · valeurs moyennes, estimation */
+  ...[
+    ['x11', 'Kebab poulet', 210, 20, 13, 3],
+    ['x12', 'Kebab dinde', 195, 21, 11, 3],
+    ['x13', 'Kebab veau-dinde', 225, 19, 15, 3],
+    ['x14', 'Kebab veau', 240, 18, 17, 3],
+    ['x15', 'Kebab bœuf', 260, 19, 19, 3],
+    ['x16', 'Kebab bœuf-agneau', 275, 18, 21, 3],
+    ['x17', 'Kebab agneau', 285, 17, 23, 3],
+    ['x18', 'Kebab industriel (broche pressée)', 255, 16, 19, 5],
+    ['x19', 'Brochette poulet (chich taouk)', 160, 25, 6, 2],
+    ['x20', 'Adana / köfte', 275, 17, 22, 2],
+  ].map(([c, n, kcal, p, l, g]) => ({ c, n, grp: 'Kebab – viande seule', kcal, p, l, g, portion: 160, portionName: 'portion', note: 'Valeurs moyennes, estimation', r05: true })),
 ];
 
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
@@ -1634,7 +1648,13 @@ const FOOD_DEFAULTS = {
   'red bull': 'Red Bull (canette 25 cl)', 'redbull': 'Red Bull (canette 25 cl)', 'monster': 'Monster Energy (canette 50 cl)',
   'whey': 'Whey protéine en poudre (moyenne)', 'proteine': 'Whey protéine en poudre (moyenne)', 'shaker proteine': 'Whey protéine en poudre (moyenne)',
   'big mac': "Big Mac (McDonald's)", 'tacos': 'French tacos (moyenne, 1 viande, frites, sauce fromagère)', 'french tacos': 'French tacos (moyenne, 1 viande, frites, sauce fromagère)',
-  'kebab': 'Sandwich grec ou Kebab, pita, crudités', 'grec': 'Sandwich grec ou Kebab, pita, crudités', 'sandwich grec': 'Sandwich grec ou Kebab, pita, crudités',
+  'kebab': 'Kebab veau-dinde', 'viande kebab': 'Kebab veau-dinde', 'kebab viande': 'Kebab veau-dinde', 'kebab veau dinde': 'Kebab veau-dinde', 'kebab dinde veau': 'Kebab veau-dinde',
+  'kebab poulet': 'Kebab poulet', 'poulet kebab': 'Kebab poulet', 'kebab dinde': 'Kebab dinde', 'dinde kebab': 'Kebab dinde', 'kebab veau': 'Kebab veau', 'veau kebab': 'Kebab veau',
+  'kebab boeuf': 'Kebab bœuf', 'boeuf kebab': 'Kebab bœuf', 'kebab boeuf agneau': 'Kebab bœuf-agneau', 'kebab agneau boeuf': 'Kebab bœuf-agneau', 'kebab agneau': 'Kebab agneau', 'agneau kebab': 'Kebab agneau',
+  'kebab industriel': 'Kebab industriel (broche pressée)', 'kebab broche': 'Kebab industriel (broche pressée)', 'kebab broche pressee': 'Kebab industriel (broche pressée)',
+  'chich taouk': 'Brochette poulet (chich taouk)', 'shish taouk': 'Brochette poulet (chich taouk)', 'chiche taouk': 'Brochette poulet (chich taouk)', 'brochette poulet': 'Brochette poulet (chich taouk)',
+  'adana': 'Adana / köfte', 'kofte': 'Adana / köfte', 'adana kofte': 'Adana / köfte', 'kefta': 'Adana / köfte',
+  'grec': 'Sandwich grec ou Kebab, pita, crudités', 'sandwich grec': 'Sandwich grec ou Kebab, pita, crudités',
   'burger': 'Hamburger, provenant de fast food', 'hamburger': 'Hamburger, provenant de fast food', 'cheeseburger': 'Cheeseburger, provenant de fast food',
   'nugget': 'Volaille, croquette panée ou nuggets', 'pizza': 'Pizza au fromage ou Pizza margherita, préemballée', 'cookie': 'Cookie aux pépites de chocolat',
   'chip': 'Chips de pommes de terre nature ou aromatisées, standard', 'couscous': 'Graine de couscous (semoule de blé dur précuite), cuite, non salée',
@@ -1826,6 +1846,7 @@ function splitName(f) {
   let sub = i > 0 ? f.name.slice(i + 2) : '';
   if (f.src === 'perso') sub = sub || '⭐ mon aliment';
   if (f.src === 'off') sub = sub || '🏷️ produit de marque';
+  if (f.note) sub = f.note;
   return { short: short.length > 46 ? short.slice(0, 44) + '…' : short, sub: sub.length > 44 ? sub.slice(0, 42) + '…' : sub };
 }
 /* Aliment inconnu : on choisit en touchant ce qui ressemble le plus */
@@ -1894,7 +1915,8 @@ function searchCiqual(query, limit = 8) {
   res.sort((a, b) => b.score - a.score);
   return res.slice(0, limit);
 }
-const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 } });
+const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0 },
+  ...(f.portion ? { portion: f.portion, portionName: f.portionName } : {}), ...(f.note ? { note: f.note } : {}), ...(f.r05 ? { r05: true } : {}) });
 
 /* --- Open Food Facts (marques) --- */
 async function getJSON(url, ms = 10000) {
@@ -2004,7 +2026,8 @@ function parseFoodText(text) {
 /* --- calculs --- */
 const macroOf = (food, grams) => {
   const k = grams / 100;
-  return { kcal: Math.round(food.per100.kcal * k), p: Math.round(food.per100.p * k * 10) / 10, g: Math.round(food.per100.g * k * 10) / 10, l: Math.round(food.per100.l * k * 10) / 10 };
+  const r = food.r05 ? v => Math.round(v * 2) / 2 : v => Math.round(v * 10) / 10; // certains aliments : macros à 0,5 g près
+  return { kcal: Math.round(food.per100.kcal * k), p: r(food.per100.p * k), g: r(food.per100.g * k), l: r(food.per100.l * k) };
 };
 const fmtG = v => (Math.round(v * 10) / 10).toString().replace('.', ',');
 
@@ -2112,7 +2135,7 @@ function renderMeals() {
           <div class="entry casc" style="--j:${xi}">
             <div class="entry-body">
               <div class="entry-title">${esc(x.name)}</div>
-              <div class="entry-meta">${x.grams ? fmtQty(x.grams, x.liq || isLiquid({ name: x.name })) + ' · ' : ''}P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' || x.src === 'marque' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}</div>
+              <div class="entry-meta">${x.grams ? fmtQty(x.grams, x.liq || isLiquid({ name: x.name })) + ' · ' : ''}P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}${x.src === 'off' || x.src === 'marque' ? ' · 🏷️' : x.src === 'perso' ? ' · ⭐' : ''}${x.est ? '<br><span class="faint">Valeurs moyennes, estimation</span>' : ''}</div>
             </div>
             <div class="entry-xp" style="color:var(--text)">${fmtNum(x.kcal)}</div>
             <button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button>
@@ -2211,7 +2234,7 @@ function tileHtml(f, i, j, on) {
       <span class="ft-emo">${foodEmoji(f)}</span>
       <span class="ft-name">${esc(short)}</span>
       ${sub ? `<span class="ft-sub">${esc(sub)}</span>` : ''}
-      <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>${isLiquid(f) ? `pour ${fmtL(d)}` : `par dose de ${d} g`}</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>${isLiquid(f) ? 'pour 100 ml' : 'pour 100 g'}</small>`}</span>
+      <span class="ft-val">${m ? `<b>${m.kcal}</b> kcal · <b>${fmtG(m.p)}</b> g prot.<small>${isLiquid(f) ? `pour ${fmtL(d)}` : `par ${f.portionName || 'dose'} de ${d} g`}</small>` : `<b>${Math.round(f.per100.kcal)}</b> kcal · <b>${fmtG(f.per100.p)}</b> g prot.<small>${isLiquid(f) ? 'pour 100 ml' : 'pour 100 g'}</small>`}</span>
       ${on ? '<span class="ft-check">✓</span>' : ''}
     </button>`;
 }
@@ -2229,7 +2252,7 @@ function qtyHtml(it, i, f) {
       </div>
       <div class="fchips">${chips.map(([v, lab]) => `<button type="button" class="fchip ${v === g ? 'on' : ''}" data-setg="${i}:${v}">${lab}</button>`).join('')}</div>`;
   }
-  if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} dose${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
+  if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} ${f.portionName || 'dose'}${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
   else {
     const b = defaultPortion(f), r = b <= 30 ? 5 : 10;
     chips = [...new Set([0.5, 1, 1.5, 2].map(k => Math.max(r, Math.round((b * k) / r) * r)))].map(v => [v, `${v} g`, '']);
@@ -2521,7 +2544,7 @@ function openFoodSheet(meal) {
           const qWas = dailyQuest(day).done;
           ok.forEach((it, k) => {
             const f = it.cands[it.sel];
-            state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src, ...(isLiquid(f) ? { liq: true } : {}) });
+            state.meals.push({ id: uid(), date: day, meal: mealSel, ts: now + k, name: f.name.slice(0, 120), grams: it.grams, ...macroOf(f, it.grams), src: f.src, ...(isLiquid(f) ? { liq: true } : {}), ...(f.note ? { est: true } : {}) });
           });
           save();
           close(null);
