@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.4.0';
+const APP_VERSION = '3.5.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -1595,7 +1595,8 @@ function loadCiqual() {
   if (ciqual) return Promise.resolve(ciqual);
   if (!ciqualLoading) {
     ciqualLoading = fetch('data/ciqual.json').then(r => r.json()).then(d => {
-      ciqual = d.concat(EXTRA_FOODS).map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
+      const withPortion = f => { const b = BASE_PORTIONS[f.c]; return !b ? f : Array.isArray(b) ? { ...f, portion: b[0], portionName: b[1] } : { ...f, ...b }; };
+      ciqual = d.map(withPortion).concat(EXTRA_FOODS).map(f => ({ ...f, _t: tokensOf(f.n), _n: normTxt(f.n) }));
       buildVocab();
       return ciqual;
     }).catch(e => { ciqualLoading = null; throw e; });
@@ -1673,8 +1674,50 @@ const EXTRA_FOODS = [
     ['x19', 'Brochette poulet (chich taouk)', 160, 25, 6, 2],
     ['x20', 'Adana / köfte', 275, 17, 22, 2],
   ].map(([c, n, kcal, p, l, g]) => ({ c, n, grp: 'Kebab – viande seule', kcal, p, l, g, portion: 160, portionName: 'portion', note: 'Valeurs moyennes, estimation', r05: true })),
-  { c: 'x21', n: 'Sauce fromagère (type tacos)', grp: 'sauces', kcal: 186, p: 5, l: 16.5, g: 4.5, note: 'Valeurs moyennes, estimation' },
+  /* Pains absents de Ciqual · pour 100 g · portion = 1 pain (ou 1 part) · valeurs moyennes, estimation
+     [code, nom, kcal, protéines, glucides, lipides, portion (g), nom de la portion] */
+  ...[
+    ['x22', 'Pain kebab', 255, 8.5, 51, 1, 130, 'pain'],
+    ['x23', 'Galette tacos (grande tortilla de blé)', 305, 8.5, 50.5, 7.5, 90, 'galette'],
+    ['x24', 'Naan (pain indien nature)', 290, 9, 50, 6, 100, 'naan'],
+    ['x25', 'Naan au fromage (cheese naan)', 310, 10.5, 40, 12, 150, 'naan'],
+    ['x26', 'Bun brioché (pain burger brioché)', 305, 9, 49, 7.5, 75, 'pain'],
+    ['x27', 'Pain libanais (pain arabe fin)', 275, 9, 55, 1.5, 60, 'pain'],
+    ['x28', 'Galette maison matlouh (pain à la semoule)', 280, 8, 55, 3, 100, 'part'],
+    ['x29', 'Ciabatta (pain italien)', 262, 9, 50, 3, 80, 'pain'],
+    ['x30', 'Focaccia nature (à l\'huile d\'olive)', 290, 7.5, 45, 9, 80, 'part'],
+    ['x31', 'Pain sandwich long (type sub)', 275, 9, 52, 3, 120, 'pain'],
+  ].map(([c, n, kcal, p, g, l, portion, portionName]) => ({ c, n, grp: 'Pains', kcal, p, g, l, portion, portionName, note: 'Valeurs moyennes, estimation' })),
+  /* Sauces absentes de Ciqual · pour 100 g · portion = 1 dose · valeurs moyennes, estimation */
+  ...[
+    ['x21', 'Sauce fromagère', 651, 1.3, 6.7, 68.6, 30],
+    ['x32', 'Sauce biggy', 440, 1, 12, 43, 30],
+    ['x33', 'Sauce brazil', 470, 0.7, 14, 46, 30],
+    ['x34', 'Sauce sweet chili (piment doux)', 220, 0.4, 53, 0.5, 30],
+    ['x35', 'Sauce ail-ciboulette', 330, 1, 6, 33.5, 30],
+    ['x36', 'Sauce cheddar', 260, 4, 9, 23, 30],
+  ].map(([c, n, kcal, p, g, l, portion]) => ({ c, n, grp: 'Sauces', kcal, p, g, l, portion, portionName: 'dose', note: 'Valeurs moyennes, estimation' })),
 ];
+/* Pains et sauces déjà dans Ciqual : on leur donne seulement une portion par défaut (code Ciqual → [grammes, nom de la portion]).
+   chips = choix rapides quand un même pain se mange en tranche, en morceau ou en baguette entière. */
+const BREAD_CHIPS = [[35, '1 tranche'], [60, '1 morceau'], [125, '½ baguette'], [250, '1 baguette']];
+const BASE_PORTIONS = {
+  // pains
+  7001: { chips: BREAD_CHIPS }, 7007: { chips: BREAD_CHIPS }, // pain blanc / tradition : baguette, demi-baguette, morceau
+  7200: [25, 'tranche'], 7111: [25, 'tranche'], 7109: [25, 'tranche'], 7210: [30, 'tranche'], // pains de mie
+  7110: [40, 'tranche'], 7255: [40, 'tranche'], 7098: [40, 'tranche'], 7100: [40, 'tranche'], 7099: [40, 'tranche'], 7125: [40, 'tranche'], 7106: [40, 'tranche'],
+  7225: [40, 'tranche'], // pain brioché
+  7180: [80, 'pain'], // pita
+  7815: [60, 'galette'], 7813: [60, 'galette'], // wrap / tortilla
+  7170: [120, 'pain'], 7258: [90, 'bagel'], 7259: [60, 'pain'], 7262: [60, 'pain'], // panini, bagel, burger / hot-dog
+  // sauces : 1 dose
+  11240: [30, 'dose'], 11246: [30, 'dose'], 11243: [30, 'dose'], 11203: [30, 'dose'], 11196: [30, 'dose'], 11167: [30, 'dose'],
+  11054: [30, 'dose'], 11079: [30, 'dose'], 11100: [30, 'dose'], 11244: [30, 'dose'], 11247: [30, 'dose'], 11212: [30, 'dose'],
+  11102: [30, 'dose'], 11051: [30, 'dose'], 11179: [30, 'dose'], 11210: [30, 'dose'], 11166: [30, 'dose'],
+  11008: [20, 'dose'], 11073: [20, 'dose'], 11112: [10, 'dose'], 11013: [10, 'dose'], 11021: [10, 'dose'],
+  11104: [15, 'cuillère'], 11216: [15, 'cuillère'], 11110: [15, 'cuillère'], 11108: [15, 'cuillère'], 11109: [15, 'cuillère'],
+  11182: [50, 'portion'], 11132: [50, 'portion'], 11107: [80, 'portion'],
+};
 
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
 const FOOD_DEFAULTS = {
@@ -1711,7 +1754,7 @@ const FOOD_DEFAULTS = {
   'chip': "Chips de pommes de terre nature ou aromatisées", 'couscous': "Semoule ou graine de couscous, cuite, sans sel ajouté",
   'semoule': "Semoule ou graine de couscous, cuite, sans sel ajouté", 'fanta': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
   'sprite': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'ice tea': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)', 'soda': 'Fanta / Sprite / Ice Tea (sodas sucrés, moyenne)',
-  'pain mie': "Pain de mie complet, préemballé", 'oeuf brouille': "Oeuf brouillé, avec matière grasse",
+  'pain mie': "Pain de mie blanc, préemballé", 'oeuf brouille': "Oeuf brouillé, avec matière grasse",
   'chocolat': "Chocolat noir 50 % de cacao environ, tablette", 'chocolat noir': "Chocolat noir 50 % de cacao environ, tablette",
   'chocolat lait': 'Chocolat au lait, tablette', 'thon': 'Thon, au naturel, appertisé, égoutté', 'mozzarella': 'Mozzarella au lait de vache',
   'gruyere': "Gruyère, sans précision (origine France ou Suisse)", 'comte': 'Comté', 'ketchup': 'Ketchup, préemballé', 'mayonnaise': 'Mayonnaise (70% MG min.), préemballée', 'mayo': 'Mayonnaise (70% MG min.), préemballée',
@@ -1726,6 +1769,51 @@ const FOOD_DEFAULTS = {
   'eau': 'Eau du robinet', 'eau robinet': 'Eau du robinet', 'eau plate': "Eau minérale, embouteilée, plate (aliment moyen)", 'eau minerale': 'Eau minérale (aliment moyen)',
   'eau gazeuse': "Eau minérale, embouteilée, gazeuse (aliment moyen)", 'eau petillante': "Eau minérale, embouteilée, gazeuse (aliment moyen)", 'bouteille eau': "Eau minérale, embouteilée, plate (aliment moyen)",
   'puree': "Purée de pomme de terre (aliment moyen)", 'puree pomme terre': "Purée de pomme de terre (aliment moyen)",
+  /* pains (clés écrites comme la recherche lit les mots : sans accents, sans « s » ou « x » final) */
+  'pain kebab': 'Pain kebab', 'pain turc': 'Pain kebab', 'pain pide': 'Pain kebab',
+  'galette taco': 'Galette tacos (grande tortilla de blé)', 'tortilla taco': 'Galette tacos (grande tortilla de blé)', 'pain taco': 'Galette tacos (grande tortilla de blé)',
+  'pita': 'Pain pita', 'pain pita': 'Pain pita',
+  'naan': 'Naan (pain indien nature)', 'pain naan': 'Naan (pain indien nature)', 'naan nature': 'Naan (pain indien nature)',
+  'naan fromage': 'Naan au fromage (cheese naan)', 'cheese naan': 'Naan au fromage (cheese naan)', 'naan cheese': 'Naan au fromage (cheese naan)',
+  'pain burger': 'Pain pour burger ou hot dog (bun), préemballé', 'pain hamburger': 'Pain pour burger ou hot dog (bun), préemballé', 'bun': 'Pain pour burger ou hot dog (bun), préemballé',
+  'pain hot dog': 'Pain pour burger ou hot dog (bun), préemballé', 'pain hotdog': 'Pain pour burger ou hot dog (bun), préemballé',
+  'bun brioche': 'Bun brioché (pain burger brioché)', 'pain burger brioche': 'Bun brioché (pain burger brioché)', 'brioche burger': 'Bun brioché (pain burger brioché)',
+  'demi baguette': "Pain blanc (par ex. : baguette, boule…)", 'pain blanc': "Pain blanc (par ex. : baguette, boule…)",
+  'baguette tradition': "Pain de tradition française (par ex. : baguette, boule…)", 'tradition': "Pain de tradition française (par ex. : baguette, boule…)",
+  'pain mie blanc': "Pain de mie blanc, préemballé", 'pain mie complet': "Pain de mie complet, préemballé",
+  'pain complet': 'Pain complet ou intégral (à la farine T150)', 'pain integral': 'Pain complet ou intégral (à la farine T150)',
+  'pain cereale': 'Pain aux céréales et/ou graines', 'pain graine': 'Pain aux céréales et/ou graines',
+  'pain campagne': 'Pain de campagne', 'pain seigle': 'Pain de seigle et froment',
+  'wrap': 'Tortilla souple (à garnir), à base de blé', 'tortilla': 'Tortilla souple (à garnir), à base de blé', 'galette wrap': 'Tortilla souple (à garnir), à base de blé',
+  'galette ble': 'Tortilla souple (à garnir), à base de blé', 'tortilla ble': 'Tortilla souple (à garnir), à base de blé',
+  'pain libanai': 'Pain libanais (pain arabe fin)', 'pain arabe': 'Pain libanais (pain arabe fin)',
+  'galette maison': 'Galette maison matlouh (pain à la semoule)', 'matlouh': 'Galette maison matlouh (pain à la semoule)', 'matlou': 'Galette maison matlouh (pain à la semoule)',
+  'matloua': 'Galette maison matlouh (pain à la semoule)', 'kesra': 'Galette maison matlouh (pain à la semoule)', 'galette semoule': 'Galette maison matlouh (pain à la semoule)',
+  'pain panini': 'Pain panini', 'bagel': 'Pain bagel', 'pain bagel': 'Pain bagel',
+  'ciabatta': 'Ciabatta (pain italien)', 'pain ciabatta': 'Ciabatta (pain italien)', 'focaccia': "Focaccia nature (à l'huile d'olive)", 'pain focaccia': "Focaccia nature (à l'huile d'olive)",
+  'pain brioche': 'Pain brioché ou viennois, artisanal', 'pain viennoi': 'Pain brioché ou viennois, artisanal', 'pain mie brioche': 'Pain de mie brioché, préemballé',
+  'pain sandwich': 'Pain sandwich long (type sub)', 'pain sandwich long': 'Pain sandwich long (type sub)', 'pain long': 'Pain sandwich long (type sub)',
+  /* sauces */
+  'sauce fromagere': 'Sauce fromagère', 'fromagere': 'Sauce fromagère',
+  'sauce blanche': 'Sauce kebab, préemballée', 'blanche': 'Sauce kebab, préemballée', 'sauce kebab': 'Sauce kebab, préemballée',
+  'sauce algerienne': 'Sauce algérienne, préemballée', 'algerienne': 'Sauce algérienne, préemballée',
+  'sauce samourai': 'Sauce samouraï, préemballée', 'samourai': 'Sauce samouraï, préemballée',
+  'sauce andalouse': 'Sauce andalouse, préemballée', 'andalouse': 'Sauce andalouse, préemballée',
+  'sauce biggy': 'Sauce biggy', 'biggy': 'Sauce biggy', 'sauce burger': 'Sauce burger, préemballée',
+  'sauce americaine': 'Sauce américaine, préemballée', 'americaine': 'Sauce américaine, préemballée',
+  'sauce brazil': 'Sauce brazil', 'brazil': 'Sauce brazil', 'sauce bresil': 'Sauce brazil',
+  'harissa': 'Harissa (sauce au piment), préemballée', 'sauce harissa': 'Harissa (sauce au piment), préemballée', 'sauce ketchup': 'Ketchup, préemballé',
+  'moutarde': 'Moutarde', 'sauce moutarde': 'Moutarde',
+  'sauce barbecue': 'Sauce barbecue, préemballée', 'barbecue': 'Sauce barbecue, préemballée', 'bbq': 'Sauce barbecue, préemballée', 'sauce bbq': 'Sauce barbecue, préemballée',
+  'sauce curry': 'Sauce au curry, froide, préemballée', 'sauce cocktail': 'Sauce cocktail, préemballée',
+  'sweet chili': 'Sauce sweet chili (piment doux)', 'sauce sweet chili': 'Sauce sweet chili (piment doux)', 'sauce chili': 'Sauce sweet chili (piment doux)', 'sauce piment dou': 'Sauce sweet chili (piment doux)',
+  'sauce poivre': 'Sauce au poivre, froide, préemballée', 'sauce bearnaise': 'Sauce béarnaise, préemballée', 'bearnaise': 'Sauce béarnaise, préemballée',
+  'sauce tartare': 'Sauce tartare, préemballée',
+  'sauce ail': 'Sauce ail-ciboulette', 'sauce ail ciboulette': 'Sauce ail-ciboulette', 'ail ciboulette': 'Sauce ail-ciboulette', 'sauce ail fine herbe': 'Sauce ail-ciboulette',
+  'sauce cheddar': 'Sauce cheddar', 'sauce soja': 'Sauce soja, préemballée', 'sauce soya': 'Sauce soja, préemballée',
+  'sauce tomate': 'Sauce tomate aux oignons, préemballée',
+  'vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée", 'sauce vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée",
+  'pesto': 'Sauce pesto, préemballée', 'sauce pesto': 'Sauce pesto, préemballée',
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|oeufs|légumineuses|légumes|pommes de terre/;
 
@@ -1878,11 +1966,12 @@ function defaultPortion(f) {
   return m ? m[1] : 100;
 }
 const EMOJIS = [
+  [/^(pain|naan|bun|galette (tacos|maison)|ciabatta|focaccia|tortilla souple)\b/, '🥖'], [/^(sauce|ketchup|mayonnaise|moutarde|harissa)\b/, '🥫'],
   [/^eau\b|\beau (minerale|de source|du robinet|gazeuse|plate)/, '💧'], [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza/, '🍕'],
   [/burger|big mac|cheeseburger/, '🍔'], [/frite/, '🍟'], [/tacos|kebab|grec|wrap|sandwich/, '🌯'], [/poulet|dinde|volaille|nugget/, '🍗'],
   [/boeuf|steak|viande|veau|porc|agneau|jambon|saucisse|lardon|bacon/, '🥩'], [/saumon|thon|poisson|cabillaud|crevette|sardine|colin/, '🐟'],
   [/oeuf/, '🥚'], [/fromage|emmental|gruyere|comte|mozzarella|camembert/, '🧀'], [/yaourt|skyr|fromage blanc|lait|creme/, '🥛'],
-  [/pain|baguette|croissant|brioche|viennois/, '🥖'], [/cereale|muesli|avoine|granola/, '🥣'], [/pomme de terre|patate|puree/, '🥔'],
+  [/pain|baguette|croissant|brioche|viennois|naan|bagel|ciabatta|focaccia|matlouh|tortilla/, '🥖'], [/cereale|muesli|avoine|granola/, '🥣'], [/pomme de terre|patate|puree/, '🥔'],
   [/banane/, '🍌'], [/pomme/, '🍎'], [/orange|clementine|mandarine/, '🍊'], [/fraise|framboise|fruits rouges/, '🍓'], [/fruit|kiwi|poire|raisin|ananas|mangue/, '🍇'],
   [/salade|brocoli|haricot vert|courgette|epinard|legume|carotte|tomate|poivron/, '🥦'], [/lentille|pois chiche|haricot/, '🫘'],
   [/chocolat|nutella|pate a tartiner/, '🍫'], [/gateau|cookie|biscuit|patisserie|tarte/, '🍪'], [/glace|sorbet/, '🍨'], [/bonbon|confiserie/, '🍬'],
@@ -1968,7 +2057,7 @@ function searchCiqual(query, limit = 8) {
   return res.slice(0, limit);
 }
 const ciqualFood = f => ({ id: 'c' + f.c, name: f.n, src: 'ciqual', grp: f.grp || '', per100: { kcal: f.kcal || 0, p: f.p || 0, g: f.g || 0, l: f.l || 0, ...(f.f ? { f: f.f } : {}) },
-  ...(f.portion ? { portion: f.portion, portionName: f.portionName } : {}), ...(f.note ? { note: f.note } : {}), ...(f.r05 ? { r05: true } : {}) });
+  ...(f.portion ? { portion: f.portion, portionName: f.portionName } : {}), ...(f.chips ? { chips: f.chips } : {}), ...(f.note ? { note: f.note } : {}), ...(f.r05 ? { r05: true } : {}) });
 
 /* --- Open Food Facts (marques) --- */
 async function getJSON(url, ms = 10000) {
@@ -2005,7 +2094,7 @@ async function searchOFF(query, limit = 6) {
 /* --- lecture du texte libre : "150 g riz, 2 oeufs, yaourt Danone 125 g" --- */
 const PORTIONS = [
   [/\boeuf/, 55], [/\bbanane/, 120], [/\bpomme\b/, 150], [/\borange/, 150], [/\bkiwi/, 75], [/\bclementine|\bmandarine/, 60],
-  [/\byaourt|\byogourt/, 125], [/\btranche.*jambon|\bjambon/, 40], [/\btranche/, 35], [/\bbaguette/, 250], [/\bcroissant/, 60],
+  [/\byaourt|\byogourt/, 125], [/\btranche.*jambon|\bjambon/, 40], [/\btranche/, 35], [/\bdemi baguette/, 125], [/\bbaguette/, 250], [/\bcroissant/, 60],
   [/\bpain au chocolat|\bchocolatine/, 70], [/\bbiscuit|\bgateau sec/, 10], [/\bcarre/, 5], [/\bcuillere a soupe|\bc a s\b|\bcas\b/, 15],
   [/\bcuillere a cafe|\bc a c\b|\bcac\b/, 5], [/\bverre/, 200], [/\bbols?\b/, 250], [/\bcanette/, 330], [/\bbouteille/, 500],
   [/\bsteak|\bburger|\bhamburger/, 125], [/\bavocat/, 150], [/\btomate/, 120], [/\bpart\b.*pizza|\bpizza/, 150], [/\bsandwich/, 250],
@@ -2313,7 +2402,8 @@ function qtyHtml(it, i, f) {
       </div>
       <div class="fchips">${chips.map(([v, lab]) => `<button type="button" class="fchip ${v === g ? 'on' : ''}" data-setg="${i}:${v}">${lab}</button>`).join('')}</div>`;
   }
-  if (f.portion) chips = [1, 2, 3].map(k => [Math.round(f.portion * k), `${k} ${f.portionName || 'dose'}${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
+  if (f.chips) chips = f.chips.map(([v, lab]) => [v, lab, `${v} g`]);
+  else if (f.portion) chips = [0.5, 1, 2, 3].map(k => [Math.round(f.portion * k), `${k === 0.5 ? '½' : k} ${f.portionName || 'dose'}${k > 1 ? 's' : ''}`, `${Math.round(f.portion * k)} g`]);
   else {
     const b = defaultPortion(f), r = b <= 30 ? 5 : 10;
     const seen = new Set();
@@ -2435,7 +2525,8 @@ const TACOS_MEATS = [
   [/poulet|chicken|escalope|tandoori|curry|marine/, () => ciqByName('Poulet, filet sans peau grillé/poêlé'), 'poulet'],
 ];
 const EXTRA_SAUCES = [
-  [/algerien/, /^Sauce algérienne/], [/samourai/, /^Sauce samouraï/], [/andalous/, /^Sauce andalouse/], [/blanche|kebab|biggy/, /^Sauce kebab/],
+  [/algerien/, /^Sauce algérienne/], [/samourai/, /^Sauce samouraï/], [/andalous/, /^Sauce andalouse/], [/biggy/, /^Sauce biggy/], [/brazil/, /^Sauce brazil/],
+  [/sweet chili|piment doux/, /^Sauce sweet chili/], [/\bail\b|ciboulette/, /^Sauce ail-ciboulette/], [/blanche|kebab/, /^Sauce kebab/],
   [/burger/, /^Sauce burger/], [/mayo/, /^Mayonnaise \(70/], [/ketchup/, /^Ketchup, préemballé/], [/barbecue|bbq/, /^Sauce barbecue/], [/harissa/, /^Harissa/],
 ];
 function recipeTacos(text) {
@@ -2450,7 +2541,7 @@ function recipeTacos(text) {
   const ings = [ingFrom(ciqByName('Tortilla souple (à garnir), à base de blé'), count >= 3 ? 110 : 90)];
   for (let k = 0; k < count; k++) ings.push(ingFrom(meats[k % meats.length].get(), each));
   if (!/sans frite/.test(n)) ings.push(ingFrom(ciqByName('Frites de pommes de terre, surgelées, cuites en friteuse'), 120));
-  if (!/sans sauce fromag/.test(n)) ings.push(ingFrom(ciqByName('Sauce fromagère (type tacos)'), 70));
+  if (!/sans sauce fromag/.test(n)) ings.push(ingFrom(ciqByName('Sauce fromagère'), 70));
   for (const [re, ref] of EXTRA_SAUCES) if (re.test(n)) ings.push(ingFrom(ciqFind(ref), 25));
   if (/cheddar|gratine|fromage (rape|en plus)/.test(n)) ings.push(ingFrom(ciqByName('Cheddar'), 20));
   // fusionner les viandes identiques
@@ -2483,7 +2574,7 @@ const RECIPES = [
   [/\btacos?\b/, recipeTacos],
   [/\bassiette\b.*\b(kebab|grec|grecque|doner)\b|\b(kebab|grec|doner)\b.*\bassiette\b/, recipeAssietteKebab],
 ];
-const recipeFor = text => { const n = normTxt(text); const r = RECIPES.find(([re]) => re.test(n)); return r ? r[1] : null; };
+const recipeFor = text => { const n = normTxt(text); if (/\b(galettes?|pains?|tortillas?|wraps?|sauces?)\s+(pour\s+|a\s+|de\s+)?tacos?\b/.test(n)) return null; const r = RECIPES.find(([re]) => re.test(n)); return r ? r[1] : null; };
 
 /* ---------- Mes plats enregistrés ---------- */
 function persoDishFor(text) {
@@ -2561,9 +2652,11 @@ function dishFromAi(text, plat) {
     // rattachement prudent à Ciqual : même mot principal, mêmes nombres (ex. « 15 % MG ») et énergie proche ;
     // sinon on garde l'estimation de l'IA
     const qn = normTxt(x.nom), qt = fixTokens(tokensOf(x.nom)), nums = qn.match(/\d+/g) || [];
-    const opts = searchCiqual(x.nom, 6).filter(r => r.cover >= 0.75).map(r => ({ f: r.f, exact: r.f._n === qn, head: r.f._t[0] === qt[0], nums: nums.every(k => r.f._n.includes(k)),
+    const opts = searchCiqual(x.nom, 6).filter(r => r.cover >= 0.75).map(r => ({ f: r.f, exact: r.f._n === qn || r.def, head: r.f._t[0] === qt[0], nums: nums.every(k => r.f._n.includes(k)),
       d: Math.abs(r.f.kcal - ai100.kcal) / Math.max(r.f.kcal, ai100.kcal, 1) }));
-    const best = opts.find(o => o.exact && o.d <= 0.35) || opts.find(o => o.head && o.nums && o.d <= 0.25) || opts.find(o => o.head && o.nums && o.d <= 0.35);
+    // même nom dans la base mais énergie trop différente : c'est une autre recette → on garde l'IA (pas un autre aliment au hasard)
+    const named = opts.find(o => o.exact);
+    const best = named ? (named.d <= 0.35 ? named : null) : opts.find(o => o.head && o.nums && o.d <= 0.25) || opts.find(o => o.head && o.nums && o.d <= 0.35);
     if (best) return { nom: best.f.n, g, per100: per100Of(best.f), src: 'Ciqual', ia: x.nom };
     return { nom: x.nom, g, per100: ai100, src: 'IA' };
   });
