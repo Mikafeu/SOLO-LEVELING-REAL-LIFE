@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.5.0';
+const APP_VERSION = '3.6.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -1135,6 +1135,9 @@ function bodyProgress() {
    3) estimation à partir des photos de départ, ajustée quand le poids change
    (on considère qu'environ 75 % du poids perdu est de la graisse). */
 const LEAN_MUSCLE = 0.53; // part de muscle squelettique dans la masse maigre (homme adulte, moyenne)
+/* Certaines balances (salle de sport) donnent graisse + muscle + os = 100 % (ex. 35 / 62 / 3) :
+   leur « muscle » est alors la masse maigre, pas les muscles squelettiques → on estime ceux-ci. */
+const isLeanMass = w => w && w.muscle != null && w.fat != null && w.fat + w.muscle >= 85;
 function composition(kg) {
   const b = state.body;
   const W = kg != null ? kg : currentWeight();
@@ -1144,7 +1147,7 @@ function composition(kg) {
     // on part de la dernière mesure de la balance, ajustée si le poids a bougé depuis
     const fm = lastScale.kg * lastScale.fat / 100 - 0.75 * (lastScale.kg - W);
     fat = (fm / W) * 100;
-    muscle = lastScale.muscle;
+    muscle = isLeanMass(lastScale) ? null : lastScale.muscle;
     src = 'balance';
   } else if (b.heightCm && b.waistCm && b.neckCm && b.waistCm > b.neckCm) {
     const navy = 495 / (1.0324 - 0.19077 * Math.log10(b.waistCm - b.neckCm) + 0.15456 * Math.log10(b.heightCm)) - 450;
@@ -1157,8 +1160,9 @@ function composition(kg) {
     src = 'estimation';
   }
   fat = Math.max(4, Math.min(60, fat));
+  const muscleSrc = muscle == null ? 'estimation' : 'balance';
   if (muscle == null) muscle = (100 - fat) * LEAN_MUSCLE;
-  return { fat, muscle, src };
+  return { fat, muscle, src, muscleSrc };
 }
 const fmtPct = v => (Math.round(v * 10) / 10).toFixed(1).replace('.', ',');
 const bmiLabel = b => (b < 18.5 ? 'maigre' : b < 25 ? 'normal' : b < 30 ? 'surpoids' : 'obésité');
@@ -1219,7 +1223,7 @@ function renderBodyPanel(today) {
         <div class="hud hud-right">
           <div><small>PERDU</small><b class="${lost > 0 ? 'good' : ''}">${lost > 0 ? '−' : ''}${fmtKg(Math.abs(lost))}</b><i>kg</i></div>
           <div><small>RESTANT</small><b>${fmtKg(Math.max(0, v.kg - b.goal))}</b><i>kg</i></div>
-          <div><small>MUSCLES${comp.src === 'balance' && !preview && state.weights.some(w => w.muscle != null) ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
+          <div><small>MUSCLES${comp.muscleSrc === 'balance' && !preview ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
         </div>
         <div class="hud-src">${v.kind === 'rank' ? esc(rankDesc.toUpperCase()) : v.kind === 'day0' ? esc(fmtDayLong(state.startDate).toUpperCase()) : comp.src === 'balance' ? 'SOURCE : BALANCE' : comp.src === 'mensurations' ? 'SOURCE : MENSURATIONS' : 'ESTIMATION · PHOTOS'}</div>
         ${v.kind === 'rank' ? `<div class="holo-rank-big">${v.rank}</div>` : ''}
@@ -1280,7 +1284,7 @@ function weighBody() {
     <button type="button" class="btn primary block" data-w-save="1">Enregistrer la pesée</button>
     ${state.weights.length >= 2 ? `<div class="field" style="margin-top:18px"><span>Évolution</span>${weightChartSvg()}</div>` : ''}
     ${list.length ? `<div class="field" style="margin-top:14px"><span>Dernières pesées</span>
-      ${list.map(w => `<div class="entry"><div class="entry-body"><div class="entry-title">${fmtKg(w.kg)} kg${w.fat != null ? ` · ${fmtPct(w.fat)} % graisse` : ''}${w.muscle != null ? ` · ${fmtPct(w.muscle)} % muscles` : ''}</div><div class="entry-meta">${esc(fmtDayLong(w.date))}</div></div><button type="button" class="icon-btn danger" data-w-del="${esc(w.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
+      ${list.map(w => `<div class="entry"><div class="entry-body"><div class="entry-title">${fmtKg(w.kg)} kg${w.fat != null ? ` · ${fmtPct(w.fat)} % graisse` : ''}${w.muscle != null ? ` · ${fmtPct(w.muscle)} % ${isLeanMass(w) ? 'masse maigre' : 'muscles'}` : ''}</div><div class="entry-meta">${esc(fmtDayLong(w.date))}</div></div><button type="button" class="icon-btn danger" data-w-del="${esc(w.id)}" aria-label="Supprimer">✕</button></div>`).join('')}
     </div>` : ''}`;
 }
 
@@ -1544,7 +1548,10 @@ function nutritionTargets() {
   const b = state.body, W = currentWeight();
   let kcal = b.kcalTarget, auto = false, tdee = null;
   if (b.heightCm && b.age) {
-    const bmr = 10 * W + 6.25 * b.heightCm - 5 * b.age + 5; // Mifflin-St Jeor (homme)
+    let bmr = 10 * W + 6.25 * b.heightCm - 5 * b.age + 5; // Mifflin-St Jeor (homme)
+    // graisse mesurée par la balance : moyenne avec Katch-McArdle (masse maigre), plus juste quand il y a beaucoup de graisse
+    const c = composition(null);
+    if (c.src === 'balance') bmr = (bmr + 370 + 21.6 * W * (1 - c.fat / 100)) / 2;
     tdee = bmr * 1.45; // activité modérée (sport + travail)
     if (!kcal) { kcal = Math.max(1600, Math.round((tdee - 500) / 10) * 10); auto = true; }
   }
@@ -1564,7 +1571,8 @@ function dayTotals(date) {
    objectif −400 et objectif +100, protéines ≥ 80 % de l'objectif. */
 let _nutriCache = { key: '', set: new Set() };
 function nutritionDays(today) {
-  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age;
+  const lw = state.weights[state.weights.length - 1] || {};
+  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age + '|' + lw.kg + '|' + lw.fat + '|' + state.body.goalWeight;
   if (_nutriCache.key === key) return _nutriCache.set;
   const t = nutritionTargets();
   const dates = new Set(state.meals.map(m => m.date));
@@ -4274,7 +4282,11 @@ function goalPaceHtml() {
   const fatToLose = (cur * fatNow) / 100 - (b.goalWeight * b.goalFat) / 100;
   const pace = toLose / weeks;
   const ok = pace <= 0.75;
-  return `<p class="small ${ok ? 'muted' : 'decay-warn'}" style="margin-bottom:0">Objectif ${fmtKg(b.goalWeight)} kg à moins de ${fmtG(b.goalFat + 1)} % de graisse pour le ${esc(fmtDayLong(b.goalDate))} : ≈ ${fmtG(Math.round(weeks))} semaines, ${fmtKg(Math.max(0, toLose))} kg à perdre (≈ ${fmtKg(Math.max(0, fatToLose))} kg de graisse) → <b>${pace > 0 ? fmtG(Math.round(pace * 100) / 100) : '0'} kg/semaine</b>. ${ok ? 'Rythme réaliste ✓' : 'Rythme trop rapide : recule la date ou accepte un rythme plus lent.'}</p>`;
+  // masse maigre actuelle : quel % de graisse au poids visé, et quel poids pour la graisse visée
+  const lean = cur * (1 - fatNow / 100), fatAtGoal = (1 - lean / b.goalWeight) * 100, kgForFat = lean / (1 - b.goalFat / 100);
+  const mismatch = composition(null).src === 'balance' && fatAtGoal > b.goalFat + 3
+    ? `<p class="small decay-warn" style="margin:6px 0 0">Avec ta masse maigre actuelle (${fmtKg(Math.round(lean * 10) / 10)} kg), à ${fmtKg(b.goalWeight)} kg tu serais vers <b>${fmtG(Math.round(fatAtGoal))} % de graisse</b>. Pour ${fmtG(b.goalFat)} %, il faudrait ≈ <b>${fmtKg(Math.round(kgForFat))} kg</b> (ou ≈ ${fmtKg(Math.round(b.goalWeight * (1 - b.goalFat / 100) - lean))} kg de muscle en plus).</p>` : '';
+  return mismatch + `<p class="small ${ok ? 'muted' : 'decay-warn'}" style="margin-bottom:0">Objectif ${fmtKg(b.goalWeight)} kg à moins de ${fmtG(b.goalFat + 1)} % de graisse pour le ${esc(fmtDayLong(b.goalDate))} : ≈ ${fmtG(Math.round(weeks))} semaines, ${fmtKg(Math.max(0, toLose))} kg à perdre (≈ ${fmtKg(Math.max(0, fatToLose))} kg de graisse) → <b>${pace > 0 ? fmtG(Math.round(pace * 100) / 100) : '0'} kg/semaine</b>. ${ok ? 'Rythme réaliste ✓' : 'Rythme trop rapide : recule la date ou accepte un rythme plus lent.'}</p>`;
 }
 
 function openActivityEditor(activity, bad = false) {
