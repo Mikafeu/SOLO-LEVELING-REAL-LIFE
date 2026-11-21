@@ -1,7 +1,7 @@
 /* Service worker : fait marcher l'app hors connexion
    et installe automatiquement les nouvelles versions.
    ⚠️ Augmenter VERSION à chaque mise à jour (même numéro que app.js). */
-const VERSION = '3.7.1';
+const VERSION = '3.8.0';
 const CACHE = 'mon-systeme-' + VERSION;
 const ASSETS = [
   './',

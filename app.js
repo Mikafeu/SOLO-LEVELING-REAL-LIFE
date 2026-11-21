@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.7.1';
+const APP_VERSION = '3.8.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -226,6 +226,13 @@ function sanitizeState(raw) {
     if (inR(rb.neckCm, 25, 70)) s.body.neckCm = rb.neckCm;
     if (inR(rb.fatStart, 5, 60)) s.body.fatStart = rb.fatStart;
     if (inR(rb.kcalTarget, 1000, 6000)) s.body.kcalTarget = rb.kcalTarget;
+    // objectifs nutritionnels datés : chacun s'applique à partir de sa date (les jours d'avant gardent les leurs)
+    if (Array.isArray(rb.nutriPlan)) {
+      const v = (x, a, b) => (inR(x, a, b) ? Math.round(x) : null);
+      s.body.nutriPlan = rb.nutriPlan.filter(e => e && isValidKey(e.from))
+        .map(e => ({ from: e.from, kcal: v(e.kcal, 1000, 6000), p: v(e.p, 30, 400), g: v(e.g, 30, 800), l: v(e.l, 20, 300) }))
+        .sort((a, b) => a.from.localeCompare(b.from));
+    }
     if (typeof rb.wakeTime === 'string' && /^\d{2}:\d{2}$/.test(rb.wakeTime)) s.body.wakeTime = rb.wakeTime;
   }
   s.weights = (Array.isArray(raw.weights) ? raw.weights : [])
@@ -1545,7 +1552,30 @@ const MEALS = [
 const mealLabel = k => (MEALS.find(m => m.key === k) || MEALS[0]);
 
 /* --- objectifs du jour --- */
-function nutritionTargets() {
+/* Objectifs choisis le 21/11/2026 : 2 600 kcal, 170 g de protéines, 310 g de glucides, 75 g de lipides.
+   Les jours d'avant gardent les objectifs qu'ils avaient (figés au moment du changement) : rien ne change pour l'XP déjà gagnée. */
+const NUTRI_PLAN_START = { from: '2026-11-21', kcal: 2600, p: 170, g: 310, l: 75 };
+function nutriPlan() {
+  const b = state.body;
+  if (!Array.isArray(b.nutriPlan) || !b.nutriPlan.length) {
+    const old = autoTargets();
+    b.nutriPlan = [{ from: '2000-01-01', kcal: old.kcal, p: old.p, g: old.g, l: old.l }, { ...NUTRI_PLAN_START }];
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+  }
+  return b.nutriPlan;
+}
+/* objectifs en vigueur ce jour-là (par défaut aujourd'hui) ; une valeur vide = calcul automatique */
+function nutritionTargets(date, auto) {
+  auto = auto || autoTargets();
+  const d = date || todayKey();
+  let e = null;
+  for (const x of nutriPlan()) if (x.from <= d) e = x;
+  if (!e) return auto;
+  const kcal = e.kcal || auto.kcal, p = e.p || auto.p, l = e.l || auto.l;
+  const g = e.g || Math.max(80, Math.round((kcal - p * 4 - l * 9) / 4));
+  return { kcal, p, g, l, auto: !e.kcal, known: true, tdee: auto.tdee, from: e.from, set: { kcal: e.kcal, p: e.p, g: e.g, l: e.l } };
+}
+function autoTargets() {
   const b = state.body, W = currentWeight();
   let kcal = b.kcalTarget, auto = false, tdee = null;
   if (b.heightCm && b.age) {
@@ -1573,13 +1603,14 @@ function dayTotals(date) {
 let _nutriCache = { key: '', set: new Set() };
 function nutritionDays(today) {
   const lw = state.weights[state.weights.length - 1] || {};
-  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age + '|' + lw.kg + '|' + lw.fat + '|' + state.body.goalWeight;
+  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age + '|' + lw.kg + '|' + lw.fat + '|' + state.body.goalWeight + '|' + JSON.stringify(nutriPlan());
   if (_nutriCache.key === key) return _nutriCache.set;
-  const t = nutritionTargets();
+  const auto = autoTargets();
   const dates = new Set(state.meals.map(m => m.date));
   const ok = new Set();
   for (const d of dates) {
     if (d >= today) continue;
+    const t = nutritionTargets(d, auto); // objectifs de CE jour-là
     const x = dayTotals(d);
     const main = ['matin', 'midi', 'soir'].filter(k => x.meals.has(k)).length;
     if (main >= 3 && x.kcal >= t.kcal - 400 && x.kcal <= t.kcal + 100 && x.p >= t.p * 0.8) ok.add(d);
@@ -2303,7 +2334,7 @@ function mealRowsHtml(date) {
 }
 
 function renderNutritionCard(today) {
-  const t = dayTotals(today), tg = nutritionTargets();
+  const t = dayTotals(today), tg = nutritionTargets(today);
   const ns = nutriStatus(today, t, tg);
   return `
     <section class="panel nut nut-${ns.k}">
@@ -2320,7 +2351,7 @@ function renderNutritionCard(today) {
 function renderMeals() {
   const today = todayKey();
   const day = ui.mealDay || today;
-  const t = dayTotals(day), tg = nutritionTargets();
+  const t = dayTotals(day), tg = nutritionTargets(day);
   const left = tg.kcal - t.kcal;
   const validated = nutritionDays(today).has(day);
   const ns = nutriStatus(day, t, tg);
@@ -2331,7 +2362,7 @@ function renderMeals() {
       <div class="cal-head" style="margin-bottom:12px">
         <button class="icon-btn" data-meal-day="-1" aria-label="Jour précédent">‹</button>
         <div class="center"><div class="cal-month date-glow">${day === today ? "Aujourd'hui · " + esc(fmtDayShort(day)) : esc(fmtDayLong(day))}</div>
-          <div class="small muted">${validated ? '<span style="color:var(--good)">✓ Quête nutrition validée (+' + NUTRI_XP + ' XP)</span>' : day === today ? 'Quête : 3 repas, ≤ objectif, protéines ≥ 80 %' : 'Quête nutrition non validée'}</div></div>
+          <div class="small muted">${validated ? '<span style="color:var(--good)">✓ Quête nutrition validée (+' + NUTRI_XP + ' XP)</span>' : day === today ? `Quête : 3 repas, ${fmtNum(tg.kcal - 400)} à ${fmtNum(tg.kcal + 100)} kcal, protéines ≥ ${fmtNum(Math.ceil(tg.p * 0.8))} g` : 'Quête nutrition non validée'}</div></div>
         <button class="icon-btn" data-meal-day="1" aria-label="Jour suivant" ${day >= today ? 'disabled style="opacity:.3"' : ''}>›</button>
       </div>
       <div class="nutri-macros top">${macroBars(t, tg)}</div>
@@ -3192,7 +3223,7 @@ function openFoodSheet(meal) {
           close(null);
           render();
           const kc = ok.reduce((s, it) => s + macroOf(it.cands[it.sel], it.grams).kcal, 0);
-          const tt = dayTotals(day), tg = nutritionTargets();
+          const tt = dayTotals(day), tg = nutritionTargets(day);
           toast(`${ml.label} enregistré`, `+${fmtNum(kc)} kcal · reste ${fmtNum(tg.kcal - tt.kcal)} kcal aujourd'hui`);
           sfx('success'); haptic();
           if (day >= addDays(todayKey(), -BACKFILL_DAYS)) setTimeout(() => questCompletedCheck(qWas, day), 600);
@@ -4205,9 +4236,10 @@ function renderSettings() {
       </div>
       <div class="btn-row">
         <label class="field" style="margin-bottom:0"><span>Graisse au départ (%)</span><input class="input" data-body="fatStart" data-min="5" data-max="60" inputmode="decimal" value="${fmtG(state.body.fatStart)}"></label>
-        <label class="field" style="margin-bottom:0"><span>Objectif kcal (vide = auto)</span><input class="input" data-body="kcalTarget" data-min="1000" data-max="6000" inputmode="numeric" value="${state.body.kcalTarget || ''}" placeholder="${fmtNum(nutritionTargets().kcal)}"></label>
       </div>
     </section>
+
+    ${nutriGoalsPanel()}
 
     <section class="panel">
       <div class="panel-head"><div class="panel-title">Quête quotidienne</div></div>
@@ -4339,6 +4371,44 @@ function renderSettings() {
       <button class="btn danger block" data-action="reset">Remettre à zéro</button>
     </section>
   `;
+}
+
+/* Réglages : objectifs nutritionnels du jour, modifiables (s'appliquent à partir d'aujourd'hui) */
+const NUTRI_FIELDS = [['kcal', 'Calories (kcal)', 1000, 6000], ['p', 'Protéines (g)', 30, 400], ['g', 'Glucides (g)', 30, 800], ['l', 'Lipides (g)', 20, 300]];
+function nutriGoalsPanel() {
+  const tg = nutritionTargets(), auto = autoTargets();
+  const fromMacros = tg.p * 4 + tg.g * 4 + tg.l * 9;
+  const field = ([k, lab, a, b]) => `<label class="field"><span>${lab}</span><input class="input" data-nutri="${k}" data-min="${a}" data-max="${b}" inputmode="numeric" value="${tg.set && tg.set[k] ? tg.set[k] : ''}" placeholder="auto ${fmtNum(k === 'g' ? Math.max(80, Math.round((tg.kcal - tg.p * 4 - tg.l * 9) / 4)) : auto[k])}"></label>`;
+  return `
+    <section class="panel" id="nutri-goals">
+      <div class="panel-head"><div class="panel-title">Objectifs nutritionnels (par jour)</div></div>
+      <p class="small muted" style="margin-top:0">S'appliquent à partir d'aujourd'hui : les jours passés et l'XP déjà gagnée ne changent pas. Laisse vide pour le calcul automatique.</p>
+      <div class="btn-row">${field(NUTRI_FIELDS[0])}${field(NUTRI_FIELDS[1])}</div>
+      <div class="btn-row">${field(NUTRI_FIELDS[2])}${field(NUTRI_FIELDS[3])}</div>
+      <p class="small ${Math.abs(fromMacros - tg.kcal) / tg.kcal > 0.1 ? 'decay-warn' : 'faint'}" style="margin:0">Tes macros font ≈ ${fmtNum(fromMacros)} kcal (4 × protéines + 4 × glucides + 9 × lipides) pour un objectif de ${fmtNum(tg.kcal)} kcal.${tg.from && tg.from !== '2000-01-01' ? ` En vigueur depuis le ${esc(fmtDayLong(tg.from))}.` : ''}</p>
+    </section>`;
+}
+function setNutriGoal(key, raw, input) {
+  const f = NUTRI_FIELDS.find(x => x[0] === key);
+  let v = null;
+  if (raw) {
+    v = Math.round(parseFloat(raw.replace(',', '.')));
+    if (!Number.isFinite(v) || v < f[2] || v > f[3]) { toast('Valeur invalide', `${f[1]} : entre ${f[2]} et ${f[3]}.`, 'warn'); render(); return; }
+  }
+  const today = todayKey(), plan = nutriPlan();
+  let e = plan.find(x => x.from === today);
+  if (!e) {
+    // nouvelle ligne à partir d'aujourd'hui : on reprend les objectifs en vigueur, puis on change celui-ci
+    let cur = null;
+    for (const x of plan) if (x.from <= today) cur = x;
+    e = { from: today, kcal: cur ? cur.kcal : null, p: cur ? cur.p : null, g: cur ? cur.g : null, l: cur ? cur.l : null };
+    plan.push(e);
+    plan.sort((a, b) => a.from.localeCompare(b.from));
+  }
+  e[key] = v;
+  touchSettings(); save(); render();
+  const t = nutritionTargets();
+  toast('Objectifs mis à jour', `Dès aujourd'hui : ${fmtNum(t.kcal)} kcal · P ${fmtNum(t.p)} g · G ${fmtNum(t.g)} g · L ${fmtNum(t.l)} g`);
 }
 
 /* Rythme nécessaire pour atteindre l'objectif à la date voulue */
@@ -5490,6 +5560,7 @@ document.addEventListener('change', e => {
     render();
     return;
   }
+  if (e.target.dataset && e.target.dataset.nutri) { setNutriGoal(e.target.dataset.nutri, e.target.value.trim(), e.target); return; }
   if (e.target.dataset && e.target.dataset.body) {
     const key = e.target.dataset.body, raw = e.target.value.trim();
     if (!raw && key !== 'fatStart') { state.body[key] = null; touchSettings(); save(); toast('Profil mis à jour'); return; }
