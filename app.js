@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.6.0';
+const APP_VERSION = '3.7.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -1205,6 +1205,7 @@ function renderBodyPanel(today) {
   const comp = v.comp;
   const preview = v.kind !== 'now';
   const lost = b.start - v.kg;
+  const ws = state.weights, lastStep = ws.length >= 2 ? Math.round((ws[ws.length - 1].kg - ws[ws.length - 2].kg) * 10) / 10 : 0;
   const rankDesc = v.kind === 'rank' ? (v.rank === 'S' ? 'Au-delà : physique de mannequin pro' : v.rank === 'A' ? `Objectif ${fmtKg(state.body.goalWeight)} kg · < ${state.body.goalFat + 1} % de graisse` : v.rank === 'E' ? 'Point de départ' : `${Math.round(RANK_BODY[v.rank] * 100)} % du chemin`) : '';
   return `
     <section class="panel lab ${v.kind === 'rank' ? 'rank-' + v.rank : ''}">
@@ -1221,7 +1222,7 @@ function renderBodyPanel(today) {
           <div><small>GRAISSE${comp.src === 'balance' && !preview ? '' : ' ≈'}</small><b class="fat">${fmtPct(comp.fat)}</b><i>%</i></div>
         </div>
         <div class="hud hud-right">
-          <div><small>PERDU</small><b class="${lost > 0 ? 'good' : ''}">${lost > 0 ? '−' : ''}${fmtKg(Math.abs(lost))}</b><i>kg</i></div>
+          <div><small>PERDU</small><b class="${lost > 0 ? 'good' : ''}">${lost > 0 ? '−' : lost < 0 ? '+' : ''}${fmtKg(Math.abs(lost))}</b><i>kg</i>${lastStep && !preview ? `<em class="hud-step ${lastStep < 0 ? 'good' : 'bad'}">${lastStep < 0 ? '−' : '+'}${fmtKg(Math.abs(lastStep))} kg depuis la pesée d'avant</em>` : ''}</div>
           <div><small>RESTANT</small><b>${fmtKg(Math.max(0, v.kg - b.goal))}</b><i>kg</i></div>
           <div><small>MUSCLES${comp.muscleSrc === 'balance' && !preview ? '' : ' ≈'}</small><b class="muscle">${fmtPct(comp.muscle)}</b><i>%</i></div>
         </div>
@@ -1593,8 +1594,11 @@ const STOPW = new Set('de du des la le les l d au aux a en et avec sans un une g
 /* Marques : reconnues (même mal écrites) pour chercher le produit, retirées pour la base générique */
 const BRAND_FIX = [[/\b(10|dix|in|ine|inn)\s*shape\b/gi, 'InShape'], [/\btibo\s+InShape\b/gi, 'InShape'], [/\bmy\s*prot[eé]ine?\b/gi, 'MyProtein'], [/\bnutri\s*(and|&|et|n)\s*co\b/gi, 'Nutri&Co'],
   [/\bnutri\s*muscle\b/gi, 'Nutrimuscle'], [/\boptimum(\s*nutrition)?\b|\bgold\s*standard\b/gi, 'Optimum'], [/\bapplied(\s*nutrition)?\b/gi, 'Applied'], [/\bbiotech(\s*usa)?\b/gi, 'Biotech'],
-  [/\bdomyos\b/gi, 'Decathlon'], [/\bfood\s*spring\b/gi, 'Foodspring'], [/\be\s*a\s*fit\b/gi, 'Eafit'], [/\bpro\s*zis\b/gi, 'Prozis']];
-const BRANDS = /\b(inshape|myprotein|prozis|nutrimuscle|eafit|bulk|foodspring|nutri&co|nutriandco|optimum|scitec|biotech|olimp|decathlon|domyos|hsn|applied|dymatize|grenade|kelloggs?|danone|nestle|lindt|milka|haribo|bonduelle|herta|president|carrefour|auchan|leclerc|lidl|aldi|monoprix|alpro|oikos|siggi'?s?|lu|panzani|barilla|uncle bens?|fleury michon|marque repere|weider|isostar|ovomaltine|nesquik|kinder|ferrero|mcdo|mcdonald'?s?|kfc|burger king|subway|o'?tacos)\b/i;
+  [/\bdomyos\b/gi, 'Decathlon'], [/\bfood\s*spring\b/gi, 'Foodspring'], [/\be\s*a\s*fit\b/gi, 'Eafit'], [/\bpro\s*zis\b/gi, 'Prozis'],
+  [/\bjoy\s*fuel\b/gi, 'JoyFuel'], [/\bbare\s*bells?\b/gi, 'Barebells'], [/\b(grenade\s+)?carb\s*killa\b/gi, 'Grenade Carb Killa'], [/\b(barres?\s+(prot\S*\s+)?)grenade\b(?![^,]*\b(carb|killa))/gi, '$1Grenade Carb Killa'],
+  // Snickers, Mars, Bounty, Nature Valley : barre protéinée seulement si « protéine » est écrit (sinon c'est la barre normale)
+  [/\b(snickers|mars|bounty)\b(?=[^,]*\b(prot|hi\s*-?\s*prot|high\s*-?\s*prot))/gi, 'HiProtein $&'], [/\bnature\s*valley\b(?=[^,]*\bprot)/gi, 'NatureValley']];
+const BRANDS = /\b(inshape|myprotein|prozis|nutrimuscle|eafit|bulk|foodspring|nutri&co|nutriandco|optimum|scitec|biotech|olimp|decathlon|domyos|hsn|applied|dymatize|grenade(?=[^,]*\b(?:carb|killa|barres?|bars?|prot))|joyfuel|barebells|quest|hiprotein|naturevalley|fulfil|phd|kelloggs?|danone|nestle|lindt|milka|haribo|bonduelle|herta|president|carrefour|auchan|leclerc|lidl|aldi|monoprix|alpro|oikos|siggi'?s?|lu|panzani|barilla|uncle bens?|fleury michon|marque repere|weider|isostar|ovomaltine|nesquik|kinder|ferrero|mcdo|mcdonald'?s?|kfc|burger king|subway|o'?tacos)\b/i;
 const normTxt = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/œ/g, 'oe').replace(/[^a-z0-9]+/g, ' ').trim();
 const stemW = w => (w.length > 3 ? w.replace(/(s|x)$/, '') : w);
 const tokensOf = s => normTxt(s).split(' ').filter(w => w && !STOPW.has(w) && !/^\d+$/.test(w)).map(stemW);
@@ -1650,7 +1654,7 @@ function fixToken(w) {
   for (const [v, fr] of VOCAB) {
     if (Math.abs(v.length - w.length) > max) continue;
     const d = editDist(w, v, max);
-    if (d < bd || (d === bd && fr > bf)) { best = v; bd = d; bf = fr; }
+    if (d <= max && (d < bd || (d === bd && fr > bf))) { best = v; bd = d; bf = fr; }
   }
   _fix.set(w, best);
   return best;
@@ -1725,6 +1729,8 @@ const BASE_PORTIONS = {
   11008: [20, 'dose'], 11073: [20, 'dose'], 11112: [10, 'dose'], 11013: [10, 'dose'], 11021: [10, 'dose'],
   11104: [15, 'cuillère'], 11216: [15, 'cuillère'], 11110: [15, 'cuillère'], 11108: [15, 'cuillère'], 11109: [15, 'cuillère'],
   11182: [50, 'portion'], 11132: [50, 'portion'], 11107: [80, 'portion'],
+  // barres chocolatées
+  31000: [50, 'barre'], 31001: [50, 'barre'], 31002: [57, 'barre'],
 };
 
 /* Aliments courants : choix par défaut le plus probable (cuit, nature…) */
@@ -1822,6 +1828,9 @@ const FOOD_DEFAULTS = {
   'sauce tomate': 'Sauce tomate aux oignons, préemballée',
   'vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée", 'sauce vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée",
   'pesto': 'Sauce pesto, préemballée', 'sauce pesto': 'Sauce pesto, préemballée',
+  /* barres chocolatées classiques (« mars » et « twix » s'écrivent ici « mar » et « twi ») */
+  'snicker': 'Barre chocolatée non biscuitée enrobée', 'mar': 'Barre chocolatée non biscuitée enrobée', 'barre mar': 'Barre chocolatée non biscuitée enrobée',
+  'twi': 'Barre chocolatée biscuitée', 'bounty': 'Barre à la noix de coco, enrobée de chocolat',
 };
 const COOKED_GROUPS = /pâtes|riz|céréales|viandes|poissons|œufs|oeufs|légumineuses|légumes|pommes de terre/;
 
@@ -1842,8 +1851,14 @@ const PROTEIN_TYPES = {
   drink:   { e: '🥤', label: 'Boisson protéinée', per100: { kcal: 38, p: 8, g: 1, l: 0.2 }, dose: 330 },
 };
 /* [type, nom du produit, valeurs pour 100 g (null = moyenne du type), dose] */
+/* Barre protéinée : nom, kcal, protéines, glucides, lipides, fibres (null = inconnu), poids d'une barre (g) — pour 100 g, étiquettes (≈ selon le parfum) */
+const BAR = (name, kcal, p, g, l, f, w) => ['bar', name, { kcal, p, g, l, ...(f != null ? { f } : {}) }, w];
 const BRAND_PRODUCTS = {
   'InShape': [
+    BAR('Barre crispy caramel & chocolat au lait', 359, 33, 29, 14, null, 64),
+    BAR('Barre crispy coco caramel & chocolat au lait', 356, 31, 30, 14, null, 64),
+    BAR('Barre crispy cookies & chocolat au lait', 360, 31, 31, 14, null, 64),
+    BAR('Barre amandes coco & chocolat noir', 484, 20, 34.5, 27.7, null, 40),
     ['whey', 'Whey Protein', { kcal: 393, p: 76, g: 11, l: 5 }, 30],
     ['clear', 'Clear Whey', { kcal: 333, p: 78, g: 4.3, l: 0.6 }, 25],
     ['gainer', 'Gainer', null, 100],
@@ -1858,7 +1873,10 @@ const BRAND_PRODUCTS = {
     ['vegan', 'Vegan Protein Blend', { kcal: 375, p: 70, g: 9, l: 7 }, 30],
     ['casein', 'Caséine micellaire', null, 30],
     ['gainer', 'Weight Gainer', null, 100],
-    ['bar', 'Barre protéinée (Layer bar)', null, 60],
+    BAR('Impact Protein Bar', 362, 31, 30, 14, 12, 64),
+    BAR('Layered Bar', 385, 34, 29, 13, 13, 60),
+    BAR('Crispy Layered Bar', 345, 27, 37, 14, 6, 58),
+    BAR('Protein Wafer', 466, 35.8, 31, 21.5, 2.4, 42),
   ],
   'Prozis': [
     ['whey', '100% Real Whey Protein', { kcal: 390, p: 75, g: 9, l: 6 }, 30],
@@ -1866,7 +1884,7 @@ const BRAND_PRODUCTS = {
     ['clear', 'Clear Whey', null, 25],
     ['vegan', 'Protéine vegan', null, 30],
     ['gainer', 'Gainer', null, 100],
-    ['bar', 'Barre protéinée', null, 60],
+    BAR('Zero Protein Bar', 360, 35, 25, 13, 14, 40),
   ],
   'Nutrimuscle': [
     ['native', 'Whey native', { kcal: 378, p: 80, g: 4.6, l: 5 }, 30],
@@ -1884,7 +1902,7 @@ const BRAND_PRODUCTS = {
     ['whey', 'Whey Protein', { kcal: 380, p: 77, g: 6, l: 6 }, 30],
     ['clear', 'Clear Whey', null, 25],
     ['vegan', 'Vegan Protein', null, 30],
-    ['bar', 'Barre protéinée', null, 60],
+    BAR('Protein Bar Extra Chocolate', 355, 27, 30, 15, null, 45),
   ],
   'Optimum': [
     ['whey', 'Gold Standard 100% Whey', { kcal: 395, p: 79, g: 10, l: 5 }, 30],
@@ -1905,24 +1923,59 @@ const BRAND_PRODUCTS = {
   'Decathlon': [
     ['whey', 'Whey Protein (Domyos)', { kcal: 380, p: 74, g: 9, l: 5.5 }, 30],
     ['isolate', 'Whey Isolate (Domyos)', null, 25],
-    ['bar', 'Barre protéinée', null, 55],
+    BAR('Barre protéinée de récupération chocolat', 396, 33, 40, 12, null, 60),
   ],
   'Isostar': [['whey', 'Whey Protein', null, 30], ['bar', 'Barre protéinée', null, 55]],
   'Scitec': [['whey', '100% Whey Protein Professional', { kcal: 390, p: 73, g: 10, l: 6 }, 30], ['isolate', '100% Whey Isolate', null, 25]],
-  'Biotech': [['isolate', 'Iso Whey Zero', { kcal: 370, p: 84, g: 3, l: 2 }, 25], ['whey', '100% Pure Whey', null, 28]],
+  'Biotech': [['isolate', 'Iso Whey Zero', { kcal: 370, p: 84, g: 3, l: 2 }, 25], ['whey', '100% Pure Whey', null, 28], BAR('Zero Bar', 352, 40, 24, 12, null, 50)],
   'HSN': [['whey', 'Evowhey', null, 30], ['isolate', 'Evolate (isolate)', null, 30]],
   'Applied': [['isolate', 'ISO-XP', { kcal: 370, p: 90, g: 1, l: 0.5 }, 25], ['clear', 'Clear Whey', null, 25]],
   'Dymatize': [['isolate', 'ISO 100', { kcal: 370, p: 86, g: 3, l: 1 }, 30], ['whey', 'Elite 100% Whey', null, 30]],
   'Olimp': [['whey', 'Whey Protein Complex', null, 30]],
-  'Weider': [['whey', 'Premium Whey', null, 30]],
-  'Grenade': [['bar', 'Barre Carb Killa', { kcal: 370, p: 34, g: 35, l: 13 }, 60]],
+  'Weider': [['whey', 'Premium Whey', null, 30], BAR('32% Protein Bar', 402, 32, 45, 10, null, 60)],
+  'Grenade': [
+    BAR('Carb Killa Dark Chocolate Raspberry', 365, 33.3, 30, 16.2, 5, 60),
+    BAR('Carb Killa Cookies & Cream', 388, 35, 33.3, 16.7, 2, 60),
+    BAR('Carb Killa Caramel Chaos', 357, 38.3, 21.7, 13.3, 10, 60),
+    BAR('Carb Killa White Chocolate Cookie', 365, 33.3, 30.4, 14.2, 5, 60),
+    BAR('Carb Killa Peanut Nutter', 373, 35, 26, 16, 12, 60),
+  ],
+  'JoyFuel': [
+    BAR('Cookie Dough chocolat au lait', 372, 36, 32, 15, 3.9, 55),
+    BAR('Cookie & Cream chocolat blanc', 380, 36, 35, 15, 2.9, 55),
+    BAR('Chocolat noir', 369, 36, 28, 16, 5.5, 55),
+    BAR('Noix de coco chocolat au lait', 375, 36, 31, 15.5, 4, 55),
+    BAR('Cacahuètes caramel chocolat', 378, 36, 30, 16.5, 4, 55),
+  ],
+  'Barebells': [
+    BAR('Salty Peanut', 369, 36.4, 27.3, 15.5, 5.6, 55),
+    BAR('Caramel Cashew', 364, 36.4, 27.3, 14.7, 5.6, 55),
+    BAR('Cookies & Cream', 364, 36.4, 28, 14, 5.5, 55),
+    BAR('Hazelnut Nougat', 365, 36.4, 27, 15, 5.5, 55),
+    BAR('White Chocolate Almond', 373, 36.4, 27, 16, 5, 55),
+    BAR('Soft Bar Caramel Choco', 370, 29.1, 31, 16.5, 12.7, 55),
+  ],
+  'Quest': [
+    BAR('Quest Bar Chocolate Chip Cookie Dough', 320, 35, 13, 13, 23, 60),
+    BAR('Quest Bar Cookies & Cream', 320, 35, 13, 13, 23, 60),
+  ],
+  'HiProtein': [
+    BAR('Snickers Hi Protein', 387, 36, 36, 13.5, null, 55),
+    BAR('Snickers Hi Protein Low Sugar', 384, 35, 26, 17.5, null, 57),
+    BAR('Mars Hi Protein', 351, 34, 39, 8.1, null, 59),
+    BAR('Bounty Hi Protein', 368, 29, 30, 12.6, null, 52),
+  ],
+  'NatureValley': [BAR('Nature Valley Protein cacahuète chocolat', 489, 25.6, 27.5, 28.3, 11, 40)],
+  'Fulfil': [BAR('Chocolate Hazelnut Whip', 384, 36.4, 29.1, 16.9, 4.7, 55), BAR('Salted Caramel', 373, 36.4, 29.1, 15.3, 4.7, 55)],
+  'PhD': [BAR('Smart Bar White Choc Blondie', 405, 31.2, 40.6, 14.8, null, 64)],
 };
+const BRAND_LABEL = { HiProtein: 'Mars · Snickers · Bounty', NatureValley: 'Nature Valley' };
 const brandKey = b => (b ? normTxt(b).replace(/ /g, '') : '');
 const BRAND_KEYS = Object.fromEntries(Object.keys(BRAND_PRODUCTS).map(k => [brandKey(k), k]));
 const catalogBrand = b => BRAND_KEYS[brandKey(b)] || null;
 const PTYPE_RE = [
   ['clear', /\bclear\b/], ['isolate', /\biso(lat|late|lats|lates)?\b/], ['native', /\bnatives?\b/], ['vegan', /\bvegan|\bvegetal|\bproteine de pois/],
-  ['casein', /\bcasein/], ['gainer', /\bgainer|\bprise de masse|\bmass\b/], ['bar', /\bbarres?\b/], ['pancake', /\bpancake/],
+  ['casein', /\bcasein/], ['gainer', /\bgainer|\bprise de masse|\bmass\b/], ['bar', /\bbarres?\b|\bbars?\b/], ['pancake', /\bpancake/],
   ['spread', /\btartiner/], ['drink', /\bcanettes?\b|\bdrink\b/], ['whey', /\bwhey\b/],
 ];
 const detectPType = n => (PTYPE_RE.find(([, re]) => re.test(n)) || [null])[0];
@@ -1931,18 +1984,22 @@ const FLAVORS = /\b(vanille|chocolat|choco|fraise|framboise|cookies?|caramel|ban
 function isProteinText(n, brand) {
   if (catalogBrand(brand)) return true;
   if (/\b(whey|isolate?|isolat|clear whey|caseine?|gainer|shakers?)\b/.test(n)) return true;
-  if (/\b(proteines?|prot|proteinee?s?)\b/.test(n)) {
+  if (/\bbarres?\b/.test(n) && /\bprot/.test(n)) return true;
+  if (/\b(proteines?|prot|proteinee?s?|protein)\b/.test(n)) {
     const rest = n.replace(/\b(proteines?|prot|proteinee?s?|dose|doses|scoop|scoops|mesure|mesures)\b/g, ' ').replace(FLAVORS, ' ').replace(/\d+/g, ' ').trim();
     return !rest || /^(barres?|pancakes?|pate a tartiner|tartiner)$/.test(rest);
   }
   return false;
 }
 function protFood(type, name, per100, dose, brand) {
-  const T = PROTEIN_TYPES[type];
-  return { id: 'p' + brandKey(brand || 'x') + '-' + type + '-' + normTxt(name).replace(/ /g, ''), name: brand ? `${name} — ${brand}` : name,
-    short: name, sub: brand ? `${brand} · dose ${dose} g` : `≈ moyenne · dose ${dose} g`, emoji: T.e, src: brand ? 'marque' : 'type',
-    per100: { ...(per100 || T.per100) }, portion: dose, ptype: type, grp: 'compléments' };
+  const T = PROTEIN_TYPES[type], lab = BRAND_LABEL[brand] || brand, unit = type === 'bar' ? 'barre' : 'dose';
+  return { id: 'p' + brandKey(brand || 'x') + '-' + type + '-' + normTxt(name).replace(/ /g, ''), name: brand && !BRAND_LABEL[brand] ? `${name} — ${brand}` : name,
+    short: name, sub: brand ? `${lab} · ${unit} de ${dose} g` : `≈ moyenne · ${unit} de ${dose} g`, emoji: T.e, src: brand ? 'marque' : 'type',
+    per100: { ...(per100 || T.per100) }, portion: dose, portionName: unit, ptype: type, grp: 'compléments' };
 }
+/* mots du texte qui désignent un parfum ou un modèle (« cookie dough », « salty peanut »…) */
+const PROD_STOP = new Set(['barre', 'proteine', 'proteinee', 'protein', 'bar', 'hi', 'high', 'gout', 'saveur', 'hiprotein', 'naturevalley']);
+const prodScore = (f, qt) => { const nt = tokensOf(f.short || f.name); return qt.filter(w => nt.some(t => t === w || t.startsWith(w) || (w.length > 3 && w.startsWith(t) && t.length > 3))).length; };
 /* Liste des produits proposés pour un texte protéiné */
 function protCands(query, brand) {
   const n = normTxt(query);
@@ -1951,9 +2008,18 @@ function protCands(query, brand) {
   let list = bk
     ? BRAND_PRODUCTS[bk].map(([t, nm, v, d]) => protFood(t, nm, v, d, bk))
     : Object.keys(PROTEIN_TYPES).map(t => protFood(t, PROTEIN_TYPES[t].label, null, PROTEIN_TYPES[t].dose, null));
-  if (ptype) list.sort((a, b) => (b.ptype === ptype) - (a.ptype === ptype));
-  else if (bk) list.sort((a, b) => (['whey', 'native'].includes(b.ptype)) - (['whey', 'native'].includes(a.ptype)));
-  const confident = !!ptype && list.filter(f => f.ptype === ptype).length === 1 && (!!bk || ptype !== 'bar');
+  // « barre protéinée » sans marque : la moyenne, puis toutes les barres connues
+  if (!bk && ptype === 'bar') {
+    for (const [b, prods] of Object.entries(BRAND_PRODUCTS)) for (const [t, nm, v, d] of prods) if (t === 'bar') list.push(protFood(t, nm, v, d, b));
+  }
+  const qt = tokensOf(query).filter(w => !PROD_STOP.has(w) && w !== brandKey(bk) && !catalogBrand(w));
+  const sc = new Map(list.map(f => [f, qt.length ? prodScore(f, qt) : 0]));
+  // ordre : le type écrit (barre, whey…), puis le parfum / modèle écrit, puis la whey classique de la marque
+  const pt = f => (ptype && f.ptype === ptype ? 1 : 0), dflt = f => (!ptype && bk && ['whey', 'native'].includes(f.ptype) ? 1 : 0);
+  list.sort((a, b) => pt(b) - pt(a) || sc.get(b) - sc.get(a) || dflt(b) - dflt(a));
+  const best = sc.get(list[0]) || 0, ties = list.filter(f => pt(f) === pt(list[0]) && sc.get(f) === best).length;
+  // sûr : un seul produit de ce type chez la marque, ou un seul produit de la marque qui correspond au parfum écrit
+  const confident = (!!ptype && (!!bk || ptype !== 'bar') && list.filter(f => f.ptype === ptype).length === 1) || (!!bk && best > 0 && ties === 1);
   return { list, confident, bk, ptype };
 }
 
@@ -2458,7 +2524,7 @@ function foodCardHtml(it, i) {
     const ask = isProt ? (it.bk ? `💪 Quelle protéine <b>${esc(it.bk)}</b> ?` : '💪 Quel type de protéine ? <span>(ou touche ta marque)</span>') : '👉 Lequel ? <span>Touche le bon</span>';
     body += `<div class="fc-ask">${ask}</div>
       ${isProt ? `<div class="fbrands">${['', ...Object.keys(BRAND_PRODUCTS)].map(b => `<button type="button" class="fchip ${b === (it.bk || '') ? 'on' : ''}" data-brand="${i}:${esc(b)}">${b ? esc(b) : 'Sans marque'}</button>`).join('')}</div>` : ''}
-      <div class="tiles">${it.cands.slice(0, isProt ? 14 : 8).map((c, j) => tileHtml(c, i, j, j === it.sel)).join('')}
+      <div class="tiles">${it.cands.slice(0, isProt ? 60 : 8).map((c, j) => tileHtml(c, i, j, j === it.sel)).join('')}
         ${navigator.onLine ? `<button type="button" class="ftile web" data-off="${i}"><span class="ft-emo">${it.loading ? '⟳' : '🔎'}</span><span class="ft-name">${it.loading ? 'Recherche…' : 'Chercher sur Internet'}</span><span class="ft-sub">autres produits de marque</span></button>` : ''}
         ${!isProt && !it.showCats ? `<button type="button" class="ftile web" data-cats="${i}"><span class="ft-emo">🧩</span><span class="ft-name">Pas dans la liste</span><span class="ft-sub">choisir le type d'aliment</span></button>` : ''}
       </div>`;
