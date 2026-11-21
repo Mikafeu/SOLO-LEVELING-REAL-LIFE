@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.7.0';
+const APP_VERSION = '3.7.1';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -1709,6 +1709,9 @@ const EXTRA_FOODS = [
     ['x35', 'Sauce ail-ciboulette', 330, 1, 6, 33.5, 30],
     ['x36', 'Sauce cheddar', 260, 4, 9, 23, 30],
   ].map(([c, n, kcal, p, g, l, portion]) => ({ c, n, grp: 'Sauces', kcal, p, g, l, portion, portionName: 'dose', note: 'Valeurs moyennes, estimation' })),
+  /* Lahmacun (pizza turque) : pour 100 g · 1 lahmacun ≈ 180 g · valeurs moyennes (snack et préemballé), estimation */
+  { c: 'x38', n: 'Ayran (boisson au yaourt salée)', grp: 'boissons', kcal: 36, p: 2, g: 2.2, l: 2, portion: 250, portionName: 'bouteille', note: 'Valeurs moyennes (Sütaş, Müller…)' },
+  { c: 'x37', n: 'Lahmacun (pizza turque)', grp: 'Snack turc', kcal: 240, p: 10, g: 33, l: 7.5, portion: 180, portionName: 'lahmacun', note: 'Valeurs moyennes, estimation' },
 ];
 /* Pains et sauces déjà dans Ciqual : on leur donne seulement une portion par défaut (code Ciqual → [grammes, nom de la portion]).
    chips = choix rapides quand un même pain se mange en tranche, en morceau ou en baguette entière. */
@@ -1828,6 +1831,8 @@ const FOOD_DEFAULTS = {
   'sauce tomate': 'Sauce tomate aux oignons, préemballée',
   'vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée", 'sauce vinaigrette': "Sauce vinaigrette (50 à 75% d'huile), préemballée",
   'pesto': 'Sauce pesto, préemballée', 'sauce pesto': 'Sauce pesto, préemballée',
+  'lahmacun': 'Lahmacun (pizza turque)', 'lahmajoun': 'Lahmacun (pizza turque)', 'lahmacoun': 'Lahmacun (pizza turque)', 'lahmajun': 'Lahmacun (pizza turque)',
+  'lahmadjoun': 'Lahmacun (pizza turque)', 'pizza turque': 'Lahmacun (pizza turque)', 'ayran': 'Ayran (boisson au yaourt salée)', 'ayrane': 'Ayran (boisson au yaourt salée)',
   /* barres chocolatées classiques (« mars » et « twix » s'écrivent ici « mar » et « twi ») */
   'snicker': 'Barre chocolatée non biscuitée enrobée', 'mar': 'Barre chocolatée non biscuitée enrobée', 'barre mar': 'Barre chocolatée non biscuitée enrobée',
   'twi': 'Barre chocolatée biscuitée', 'bounty': 'Barre à la noix de coco, enrobée de chocolat',
@@ -2041,7 +2046,7 @@ function defaultPortion(f) {
 }
 const EMOJIS = [
   [/^(pain|naan|bun|galette (tacos|maison)|ciabatta|focaccia|tortilla souple)\b/, '🥖'], [/^(sauce|ketchup|mayonnaise|moutarde|harissa)\b/, '🥫'],
-  [/^eau\b|\beau (minerale|de source|du robinet|gazeuse|plate)/, '💧'], [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza/, '🍕'],
+  [/^eau\b|\beau (minerale|de source|du robinet|gazeuse|plate)/, '💧'], [/whey|proteine|isolate|gainer/, '💪'], [/\briz\b/, '🍚'], [/pate|spaghetti|tagliatelle|lasagne|ravioli|nouille/, '🍝'], [/pizza|lahmacun/, '🍕'],
   [/burger|big mac|cheeseburger/, '🍔'], [/frite/, '🍟'], [/tacos|kebab|grec|wrap|sandwich/, '🌯'], [/poulet|dinde|volaille|nugget/, '🍗'],
   [/boeuf|steak|viande|veau|porc|agneau|jambon|saucisse|lardon|bacon/, '🥩'], [/saumon|thon|poisson|cabillaud|crevette|sardine|colin/, '🐟'],
   [/oeuf/, '🥚'], [/fromage|emmental|gruyere|comte|mozzarella|camembert/, '🧀'], [/yaourt|skyr|fromage blanc|lait|creme/, '🥛'],
