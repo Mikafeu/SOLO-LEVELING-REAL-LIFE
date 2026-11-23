@@ -1668,3 +1668,32 @@ svg.chart { touch-action: pan-y; }
 .scan-hint { text-align: center; color: var(--text); font-weight: 700; font-size: 14px; }
 .scan-manual { display: flex; gap: 8px; }
 .scan-manual .input { flex: 1; font: 700 17px var(--mono); letter-spacing: .08em; }
+
+/* ---------- Bilan nutrition par screen ---------- */
+.scr .panel-head b.good, .scr-line b.good { color: var(--good); }
+.scr .panel-head b.bad, .scr-line b.bad, .macro-top b.bad { color: #ff8fa3; }
+.macro-top b.good { color: var(--good); }
+.scr-total b { font-family: var(--mono); font-size: 18px; }
+.scr-ok { box-shadow: 0 0 0 1px rgba(77, 255, 184, .25) inset; }
+.scr-bad, .scr-miss { box-shadow: 0 0 0 1px rgba(255, 120, 150, .3) inset; }
+.scr .macro.mk .bar span { background: linear-gradient(90deg, #38c8ff, #8a7dff); }
+.scr-note { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+.scr-cta { margin: 6px 0 4px; }
+.scr-rules { margin-top: 8px; }
+.scr-rules summary { cursor: pointer; font-size: 13px; color: var(--neon-2, #8be9ff); }
+.scr-rules ul { padding-left: 18px; margin: 8px 0 0; display: grid; gap: 6px; }
+.scr-shot { max-height: 220px; overflow: hidden; border-radius: 14px; border: 1px solid rgba(255, 255, 255, .12); }
+.scr-shot img { width: 100%; display: block; object-fit: cover; object-position: top; }
+.scr-wait { animation: scrPulse 1.2s ease-in-out infinite; }
+@keyframes scrPulse { 50% { opacity: .45; } }
+.scr-days { display: flex; gap: 8px; margin: 4px 0 10px; }
+.scr-grid { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 8px; align-items: center; }
+.scr-grid > b { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); text-align: center; }
+.scr-grid > span { font-size: 14px; }
+.scr-grid > span i { font-style: normal; color: var(--text-dim); font-size: 11px; }
+.scr-grid .input { padding: 10px 8px; text-align: center; font-size: 17px; min-width: 0; }
+.scr-preview { margin-top: 12px; display: grid; gap: 6px; }
+.scr-line { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 14px; }
+.scr-line small { color: var(--text-dim); font-size: 11px; display: block; }
+.scr-line b { font-family: var(--mono); white-space: nowrap; }
+.scr-line.tot { border-top: 1px solid rgba(255, 255, 255, .12); padding-top: 8px; font-weight: 700; }

@@ -2,12 +2,14 @@
 
 Ce petit serveur (un *Cloudflare Worker*) garde ta clé API Claude **en sécurité** :
 la clé reste chez Cloudflare, elle n'est **jamais** dans l'app ni sur ton téléphone.
-L'app lui envoie seulement le texte du plat ; il demande à Claude de le découper
-en ingrédients et renvoie le résultat.
+L'app lui envoie soit le texte d'un plat (Claude le découpe en ingrédients), soit le
+**screen du bilan de ta journée** pris dans ton appli de nutrition (Claude relève les
+calories, protéines, glucides, lipides et les objectifs affichés). Le relais renvoie
+seulement les chiffres. Chaque lecture compte dans la limite par jour.
 
 - Modèle : **Claude Haiku 5.5** (`claude-haiku-5-5`), le modèle Claude actuel le moins cher
   (0,10 $ par million de mots-jetons lus, 0,50 $ par million écrits).
-- Coût : environ **0,001 $ par analyse**. Avec la limite de **30 analyses par jour**,
+- Coût : environ **0,001 $ par analyse** (un peu plus pour un screen, environ 0,002 $). Avec la limite de **30 analyses par jour**,
   le maximum possible est d'environ **1 $ par mois**.
 - Protections : seule l'app (adresse `https://mikafeu.github.io`) est acceptée, il faut
   ton **code d'accès** secret, et le nombre d'analyses par jour est limité.

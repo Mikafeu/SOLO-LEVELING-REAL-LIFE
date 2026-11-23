@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.8.0';
+const APP_VERSION = '3.9.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -143,6 +143,7 @@ function freshState() {
     customFoods: [],  // mes aliments (valeurs d'étiquette) : { id, name, per100:{kcal,p,g,l}, portion, ts, u }
     customExercises: [], // mes exercices : { id, nom, type, coef, ts, u }
     customJunk: [],   // mes produits de malbouffe : { id, e, nom, kcal, ts, u }
+    dayScreens: [],   // bilan nutrition de la journée lu sur un screen : { id, date, kcal, p, g, l, ok, op, og, ol, src, appli, ts, u }
     seenReports: [],
     tombstones: {},   // id supprimé → date (pour propager les suppressions entre appareils)
     settingsAt: 0,    // dernière modif des réglages
@@ -281,6 +282,12 @@ function sanitizeState(raw) {
   s.customJunk = (Array.isArray(raw.customJunk) ? raw.customJunk : [])
     .filter(x => x && typeof x.nom === 'string' && inR(x.kcal, 1, 5000))
     .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), e: typeof x.e === 'string' ? x.e.slice(0, 12) : 'autre', nom: x.nom.slice(0, 50), kcal: Math.round(x.kcal), ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
+  const nb = (v, a, b) => (Number.isFinite(v) && v >= a && v <= b ? Math.round(v * 10) / 10 : 0);
+  s.dayScreens = (Array.isArray(raw.dayScreens) ? raw.dayScreens : [])
+    .filter(x => x && isValidKey(x.date) && Number.isFinite(x.kcal))
+    .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), date: x.date, kcal: nb(x.kcal, 0, 20000), p: nb(x.p, 0, 1000), g: nb(x.g, 0, 2000), l: nb(x.l, 0, 1000),
+      ok: nb(x.ok, 0, 10000), op: nb(x.op, 0, 1000), og: nb(x.og, 0, 2000), ol: nb(x.ol, 0, 1000), src: x.src === 'ia' ? 'ia' : 'manuel',
+      appli: typeof x.appli === 'string' ? x.appli.slice(0, 30) : '', ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
   s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
     .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
     .map(r => ({ id: typeof r.id === 'string' ? r.id : uid(), date: r.date, ts: Number.isFinite(r.ts) ? r.ts : 0, n: Math.round(r.n) }));
@@ -377,7 +384,7 @@ function logsXp() {
   return v;
 }
 const dayPosXp = d => { logsXp(); return _logsXp.byDay.get(d) || 0; };
-const totalXp = () => Math.max(0, logsXp() + nutritionDays(todayKey()).size * NUTRI_XP + bodyXp() + questXp());
+const totalXp = () => Math.max(0, logsXp() + nutritionXpTotal(todayKey()) + bodyXp() + questXp());
 
 /* Recalcule les stats en "rejouant" chaque jour depuis la 1re donnée.
    Ainsi, supprimer une entrée corrige tout automatiquement.
@@ -776,7 +783,7 @@ function renderHome() {
       </div>
       <div class="bar xp energy"><i class="xp-flow" aria-hidden="true"></i><span style="width:${pct}%" ${anim.prev ? `data-w-from="${anim.prev.level < lv.level ? 0 : anim.prev.level > lv.level ? 100 : anim.prev.pct}"` : ''}></span></div>
       <div class="bar-caption"><span>XP <b data-count-to="${lv.into}" data-count-from="${anim.prev && anim.prev.level === lv.level ? anim.prev.into : lv.into}">${fmtNum(lv.into)}</b> / ${fmtNum(lv.need)}</span><span>Total <b data-count-to="${xp}" data-count-from="${cf('total', xp)}">${fmtNum(xp)}</b></span></div>
-      <div class="xp-split">Quêtes ${fmtNum(state.logs.reduce((t, l) => t + l.xp, 0))} · Nutrition ${fmtNum(nutritionDays(today).size * NUTRI_XP)} · Corps ${bodyXp() >= 0 ? '+' : ''}${fmtNum(bodyXp())} · Quête quotidienne ${questXp() >= 0 ? '+' : ''}${fmtNum(questXp())} XP</div>
+      <div class="xp-split">Quêtes ${fmtNum(state.logs.reduce((t, l) => t + l.xp, 0))} · Nutrition ${nutritionXpTotal(today) >= 0 ? '' : '−'}${fmtNum(Math.abs(nutritionXpTotal(today)))} · Corps ${bodyXp() >= 0 ? '+' : ''}${fmtNum(bodyXp())} · Quête quotidienne ${questXp() >= 0 ? '+' : ''}${fmtNum(questXp())} XP</div>
     </section>
 
     ${renderNutritionCard(today)}
@@ -953,7 +960,7 @@ function dailySeries(key, st, today) {
   if (key === 'xp') {
     const perDay = new Map();
     for (const l of state.logs) perDay.set(l.date, (perDay.get(l.date) || 0) + l.xp);
-    for (const d of nutritionDays(today)) perDay.set(d, (perDay.get(d) || 0) + NUTRI_XP);
+    for (const [d, x] of nutritionXpByDay(today)) perDay.set(d, (perDay.get(d) || 0) + x);
     let cum = 0;
     for (const d of st.history.keys()) { cum += perDay.get(d) || 0; out.push({ d, v: cum }); }
     return out;
@@ -1598,18 +1605,75 @@ function dayTotals(date) {
   for (const m of state.meals) if (m.date === date) { t.kcal += m.kcal; t.p += m.p; t.g += m.g; t.l += m.l; t.meals.add(m.meal); t.n++; }
   return t;
 }
+/* =========================================================
+   Nutrition par SCREEN (à partir du 23/11/2026) : en fin de journée, une capture de l'appli
+   de nutrition donne ce qui a été mangé et les objectifs. Les points de la journée en dépendent :
+   - Protéines : objectif atteint = +30, et +1 par % au-dessus (jusqu'à +20) ; en dessous ça baisse vite
+     (80 % = 0, 60 % = −30, minimum −40).
+   - Glucides : ≤ objectif = +10 ; au-dessus −1 par % (10 % de trop = 0, 40 % = −30, minimum −30).
+   - Lipides (le gras) : ≤ objectif = +15 ; au-dessus −1,5 par % (10 % de trop = 0, 40 % = −45, minimum −45).
+   - Calories : à ±5 % = +15 ; trop = −2 par % au-delà de 5 % (minimum −40) ; un peu en dessous = +5, beaucoup trop peu (−20 %) = −10.
+   - Aucun screen pour une journée terminée = −40.
+   Les jours d'avant gardent l'ancien système (3 repas notés = +50).
+   ========================================================= */
+const SCREEN_START = '2026-11-23';
+const SCREEN_MISS_XP = -40;
+const screenFor = d => state.dayScreens.find(x => x.date === d) || null;
+function screenGoals(sc, d) {
+  const t = nutritionTargets(d);
+  return { kcal: sc && sc.ok > 0 ? sc.ok : t.kcal, p: sc && sc.op > 0 ? sc.op : t.p, g: sc && sc.og > 0 ? sc.og : t.g, l: sc && sc.ol > 0 ? sc.ol : t.l };
+}
+function screenScore(sc, goals) {
+  const parts = [];
+  const pct = v => Math.round(v * 100);
+  // protéines : plus = mieux
+  const rp = sc.p / Math.max(1, goals.p);
+  const pp = rp >= 1 ? 30 + Math.min(20, Math.round((rp - 1) * 100)) : Math.max(-40, Math.round(30 - (1 - rp) * 150));
+  parts.push({ k: 'p', lab: 'Protéines', pts: pp, note: `${pct(rp)} % de l'objectif` });
+  // glucides : au-dessus = on perd
+  const eg = sc.g / Math.max(1, goals.g) - 1;
+  const gp = eg <= 0 ? 10 : Math.max(-30, Math.round(10 - eg * 100));
+  parts.push({ k: 'g', lab: 'Glucides', pts: gp, note: eg <= 0 ? 'dans l\'objectif' : `${pct(eg)} % au-dessus` });
+  // lipides : au-dessus = on perd plus (le gras éloigne de l'objectif)
+  const el = sc.l / Math.max(1, goals.l) - 1;
+  const lp = el <= 0 ? 15 : Math.max(-45, Math.round(15 - el * 150));
+  parts.push({ k: 'l', lab: 'Lipides', pts: lp, note: el <= 0 ? 'dans l\'objectif' : `${pct(el)} % au-dessus` });
+  // calories
+  const ek = sc.kcal / Math.max(1, goals.kcal) - 1;
+  const kp = Math.abs(ek) <= 0.05 ? 15 : ek > 0 ? Math.max(-40, Math.round(15 - (ek - 0.05) * 200)) : ek >= -0.2 ? 5 : -10;
+  parts.push({ k: 'kcal', lab: 'Calories', pts: kp, note: Math.abs(ek) <= 0.05 ? 'pile dans la cible' : ek > 0 ? `${pct(ek)} % au-dessus` : `${pct(-ek)} % en dessous${ek < -0.2 ? ' (trop peu mangé)' : ''}` });
+  return { total: parts.reduce((t, x) => t + x.pts, 0), parts };
+}
+/* XP nutrition jour par jour : ancien système avant le 23/11, screens ensuite */
+let _nxpCache = { key: '', map: null };
+function nutritionXpByDay(today) {
+  const key = today + '|' + JSON.stringify(state.dayScreens.map(x => [x.date, x.kcal, x.p, x.g, x.l, x.ok, x.op, x.og, x.ol])) + '|' + state.startDate + '|' + (_nutriCache.key || '') + '|' + JSON.stringify(nutriPlan());
+  const nd = nutritionDays(today);
+  if (_nxpCache.key === key + nd.size) return _nxpCache.map;
+  const map = new Map();
+  for (const d of nd) if (d < SCREEN_START) map.set(d, NUTRI_XP);
+  for (const sc of state.dayScreens) if (sc.date >= SCREEN_START && sc.date <= today) map.set(sc.date, screenScore(sc, screenGoals(sc, sc.date)).total);
+  let d = state.startDate > SCREEN_START ? state.startDate : SCREEN_START;
+  for (; d < today; d = addDays(d, 1)) if (!map.has(d)) map.set(d, SCREEN_MISS_XP);
+  _nxpCache = { key: key + nd.size, map };
+  return map;
+}
+const nutritionXpTotal = today => { let t = 0; for (const v of nutritionXpByDay(today).values()) t += v; return t; };
+
 /* Journée validée (jours terminés seulement) : 3 repas notés, calories entre
    objectif −400 et objectif +100, protéines ≥ 80 % de l'objectif. */
 let _nutriCache = { key: '', set: new Set() };
 function nutritionDays(today) {
   const lw = state.weights[state.weights.length - 1] || {};
-  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age + '|' + lw.kg + '|' + lw.fat + '|' + state.body.goalWeight + '|' + JSON.stringify(nutriPlan());
+  const key = today + '|' + state.meals.length + '|' + state.meals.reduce((s, m) => s + m.kcal, 0) + '|' + state.body.kcalTarget + '|' + state.body.heightCm + '|' + state.body.age + '|' + lw.kg + '|' + lw.fat + '|' + state.body.goalWeight + '|' + JSON.stringify(nutriPlan()) + '|' + JSON.stringify(state.dayScreens.map(x => [x.date, x.kcal, x.p, x.g, x.l, x.ok, x.op, x.og, x.ol]));
   if (_nutriCache.key === key) return _nutriCache.set;
   const auto = autoTargets();
   const dates = new Set(state.meals.map(m => m.date));
   const ok = new Set();
+  // à partir du 23/11 : journée « validée » = screen envoyé avec un bilan positif
+  for (const sc of state.dayScreens) if (sc.date >= SCREEN_START && sc.date <= today && screenScore(sc, screenGoals(sc, sc.date)).total > 0) ok.add(sc.date);
   for (const d of dates) {
-    if (d >= today) continue;
+    if (d >= today || d >= SCREEN_START) continue;
     const t = nutritionTargets(d, auto); // objectifs de CE jour-là
     const x = dayTotals(d);
     const main = ['matin', 'midi', 'soir'].filter(k => x.meals.has(k)).length;
@@ -2334,6 +2398,7 @@ function mealRowsHtml(date) {
 }
 
 function renderNutritionCard(today) {
+  if (today >= SCREEN_START) return screenPanelHtml(today, true);
   const t = dayTotals(today), tg = nutritionTargets(today);
   const ns = nutriStatus(today, t, tg);
   return `
@@ -2347,6 +2412,49 @@ function renderNutritionCard(today) {
     </section>`;
 }
 
+/* ---------- Bilan de la journée par screen ---------- */
+const ptsHtml = v => `<b class="${v > 0 ? 'good' : v < 0 ? 'bad' : ''}">${v > 0 ? '+' : v < 0 ? '−' : ''}${fmtNum(Math.abs(v))} XP</b>`;
+function screenPanelHtml(day, compact = false) {
+  const today = todayKey(), sc = screenFor(day);
+  if (!sc) {
+    const late = day < today;
+    return `
+    <section class="panel scr ${late ? 'scr-miss' : ''}">
+      <div class="panel-head"><div class="panel-title">📸 Bilan de la journée</div>${late ? ptsHtml(SCREEN_MISS_XP) : ''}</div>
+      <p class="small muted" style="margin-top:0">${late ? 'Aucun screen envoyé ce jour-là : −40 XP. Tu peux encore l’envoyer pour corriger.' : 'En fin de journée, envoie la capture de ton appli nutrition (total du jour et objectifs). Le Système lit les chiffres et calcule tes points. Sans screen : −40 XP.'}</p>
+      <button type="button" class="eat-cta scr-cta" data-screen="${day}"><span class="eat-ico">📸</span><span class="eat-txt"><b>Envoyer le screen ${day === today ? 'de ma journée' : 'de ce jour'}</b><small>Capture de ton appli nutrition</small></span><span class="eat-plus">＋</span></button>
+      ${compact ? '' : `<details class="scr-rules"><summary>Comment les points sont calculés</summary>
+        <ul class="small muted">
+          <li><b>Protéines</b> : objectif atteint = +30, puis +1 par % au-dessus (jusqu'à +20). En dessous ça baisse vite : 80 % = 0, 60 % = −30.</li>
+          <li><b>Glucides</b> : dans l'objectif = +10 ; au-dessus −1 point par % (40 % de trop = −30).</li>
+          <li><b>Lipides</b> : dans l'objectif = +15 ; au-dessus −1,5 point par % (le gras coûte plus cher, 40 % de trop = −45).</li>
+          <li><b>Calories</b> : à ±5 % = +15 ; au-dessus −2 points par % ; beaucoup trop peu mangé (−20 %) = −10.</li>
+          <li><b>Pas de screen</b> pour la journée = −40.</li>
+        </ul></details>`}
+    </section>`;
+  }
+  const goals = screenGoals(sc, day), sco = screenScore(sc, goals);
+  const row = (lab, v, goal, unit, cls, pts) => `
+    <div class="macro ${cls}">
+      <div class="macro-top"><span>${lab}</span><span><b>${fmtNum(v)}</b> / ${fmtNum(goal)} ${unit} · ${ptsHtml(pts.pts)}</span></div>
+      <div class="bar thin"><span style="width:${Math.min(100, (v / Math.max(1, goal)) * 100)}%"></span></div>
+      <div class="scr-note">${esc(pts.note)}</div>
+    </div>`;
+  const P = k => sco.parts.find(x => x.k === k);
+  return `
+    <section class="panel scr ${sco.total >= 0 ? 'scr-ok' : 'scr-bad'}">
+      <div class="panel-head"><div class="panel-title">📸 Bilan de la journée</div><div class="scr-total">${ptsHtml(sco.total)}</div></div>
+      <div class="nutri-macros top">
+        ${row('Calories', sc.kcal, goals.kcal, 'kcal', 'mk', P('kcal'))}
+        ${row('Protéines', sc.p, goals.p, 'g', 'mp', P('p'))}
+        ${row('Glucides', sc.g, goals.g, 'g', 'mg', P('g'))}
+        ${row('Lipides', sc.l, goals.l, 'g', 'ml', P('l'))}
+      </div>
+      <p class="small faint" style="margin:8px 0 0">${sc.src === 'ia' ? '🤖 Lu sur le screen' : '✍️ Chiffres saisis'}${sc.appli ? ' · ' + esc(sc.appli) : ''}${sc.ok > 0 ? ' · objectifs de ton appli' : ' · objectifs de l’app'}</p>
+      ${compact ? '' : `<div class="btn-row" style="margin-top:10px"><button class="btn small" data-screen="${day}">📸 Nouveau screen</button><button class="btn small" data-screen-edit="${day}">✍️ Corriger</button><button class="btn small ghost" data-screen-del="${day}">✕</button></div>`}
+    </section>`;
+}
+
 /* ---------- Onglet Repas ---------- */
 function renderMeals() {
   const today = todayKey();
@@ -2356,6 +2464,22 @@ function renderMeals() {
   const validated = nutritionDays(today).has(day);
   const ns = nutriStatus(day, t, tg);
   const mealPhotos = photos.filter(p => p.kind === 'meal' && p.date === day);
+  if (day >= SCREEN_START) {
+    const items = state.meals.filter(x => x.date === day).sort((a, b) => a.ts - b.ts);
+    return `
+    <section class="panel">
+      <div class="cal-head">
+        <button class="icon-btn" data-meal-day="-1" aria-label="Jour précédent">‹</button>
+        <div class="center"><div class="cal-month date-glow">${day === today ? "Aujourd'hui · " + esc(fmtDayShort(day)) : esc(fmtDayLong(day))}</div>
+          <div class="small muted">Nutrition : un screen par jour, les points dépendent de ce que tu as mangé</div></div>
+        <button class="icon-btn" data-meal-day="1" aria-label="Jour suivant" ${day >= today ? 'disabled style="opacity:.3"' : ''}>›</button>
+      </div>
+    </section>
+    ${screenPanelHtml(day)}
+    ${items.length ? `<section class="panel"><div class="panel-head"><div class="panel-title">Aliments notés à la main</div><div class="panel-sub">ne comptent pas dans les points</div></div>
+      ${items.map(x => `<div class="entry"><div class="entry-body"><div class="entry-title">${esc(x.name)}</div><div class="entry-meta">${fmtNum(x.kcal)} kcal · P ${fmtG(x.p)} · G ${fmtG(x.g)} · L ${fmtG(x.l)}</div></div><button class="icon-btn danger" data-del-food="${esc(x.id)}" aria-label="Supprimer">✕</button></div>`).join('')}</section>` : ''}
+    <div class="center" style="margin:6px 0 18px"><button class="btn small ghost" data-add-food="${day === today ? guessMeal() : 'midi'}">🔎 Chercher un aliment (calories, protéines)</button></div>`;
+  }
   return `
     <section class="panel nut nut-${ns.k}">
       <div class="nut-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
@@ -2729,8 +2853,104 @@ function aiCachePut(k, plat) {
 const IA_ERR = {
   code: 'Code d’accès refusé (Réglages → Analyse IA).', origine: 'Le relais refuse cette adresse.', limite: 'Limite d’analyses IA atteinte pour aujourd’hui.',
   cle_absente: 'La clé API n’est pas installée dans le relais.', cle_invalide: 'La clé API du relais est invalide.', refus: 'L’IA a refusé cette demande.',
-  surcharge: 'L’IA est surchargée, réessaie dans un instant.', connexion: 'Le relais n’arrive pas à joindre l’IA.', texte: 'Texte trop court.',
+  surcharge: 'L’IA est surchargée, réessaie dans un instant.', connexion: 'Le relais n’arrive pas à joindre l’IA.', texte: 'Texte trop court.', image: 'Image refusée par le relais (trop lourde ou format inconnu).',
 };
+/* Screen : image → base64 (JPEG réduit) → relais IA → chiffres de la journée */
+const blobToB64 = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = () => rej(new Error('Lecture impossible')); r.readAsDataURL(b); });
+async function aiReadScreen(blob) {
+  if (!aiReady()) throw new Error('Lecture automatique non configurée (Réglages → Analyse IA) : entre les chiffres à la main.');
+  if (!navigator.onLine) throw new Error('Pas de connexion Internet : entre les chiffres à la main.');
+  const ctrl = new AbortController(), tm = setTimeout(() => ctrl.abort(), 70000);
+  let r, j = {};
+  try {
+    r = await fetch(prefs.iaUrl, { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Code-Acces': prefs.iaCode }, body: JSON.stringify({ image: await blobToB64(blob), type: 'image/jpeg' }) });
+    j = await r.json().catch(() => ({}));
+  } catch (e) { throw new Error('Le relais IA ne répond pas.'); } finally { clearTimeout(tm); }
+  if (Number.isFinite(j.utilises)) { prefs.iaDay = todayKey(); prefs.iaCount = j.utilises; prefs.iaMax = j.max || prefs.iaMax; savePrefs(); }
+  if (!r.ok) throw new Error(IA_ERR[j.erreur] || (j.erreur === 'texte' ? 'Le relais n’est pas encore à jour (il doit être redéployé).' : `Erreur du relais (${r.status}).`));
+  const b = j.bilan;
+  if (!b || !b.consomme) throw new Error('Réponse de l’IA illisible.');
+  if (!b.lisible) throw new Error('Ce screen ne ressemble pas à un bilan nutritionnel.');
+  return b;
+}
+let screenTargetDay = null;
+function pickScreen(day) {
+  screenTargetDay = day;
+  const inp = $('#screen-file');
+  inp.value = '';
+  inp.click();
+}
+async function onScreenFile(file) {
+  const day = screenTargetDay || todayKey();
+  let blob, url;
+  try { blob = await resizePhoto(file, 1600); url = URL.createObjectURL(blob); } catch (e) { toast('Image illisible', e.message || '', 'warn'); return; }
+  openScreenSheet(day, null, url, blob);
+}
+/* feuille de vérification : chiffres lus (ou à saisir) + aperçu des points */
+function openScreenSheet(day, prefill, url, blob) {
+  const t = nutritionTargets(day);
+  const old = screenFor(day);
+  const v = prefill || (old ? { kcal: old.kcal, p: old.p, g: old.g, l: old.l, ok: old.ok || t.kcal, op: old.op || t.p, og: old.og || t.g, ol: old.ol || t.l, src: old.src, appli: old.appli } : { kcal: '', p: '', g: '', l: '', ok: t.kcal, op: t.p, og: t.g, ol: t.l, src: 'manuel', appli: '' });
+  const F = [['kcal', 'ok', 'Calories', 'kcal'], ['p', 'op', 'Protéines', 'g'], ['g', 'og', 'Glucides', 'g'], ['l', 'ol', 'Lipides', 'g']];
+  const today = todayKey();
+  openSheet({
+    tag: '[SYSTÈME] Bilan nutrition',
+    title: '📸 Ma journée',
+    body: `
+      ${url ? `<div class="scr-shot"><img src="${url}" alt="Capture"></div>` : ''}
+      <div id="scr-status" class="small muted" style="margin:8px 0">${url && aiReady() ? '<span class="scr-wait">🤖 Lecture du screen en cours…</span>' : url ? 'Lecture automatique non configurée : recopie les chiffres du screen.' : 'Corrige les chiffres si besoin.'}</div>
+      <div class="scr-days">${[today, addDays(today, -1)].map(d => `<button type="button" class="fchip ${d === day ? 'on' : ''}" data-scr-day="${d}">${d === today ? "Aujourd'hui" : 'Hier'}</button>`).join('')}</div>
+      <div class="scr-grid">
+        <span></span><b>Mangé</b><b>Objectif</b>
+        ${F.map(([a, b, lab, u]) => `<span>${lab} <i>(${u})</i></span><input class="input" data-scv="${a}" inputmode="decimal" value="${v[a] === '' ? '' : v[a]}" placeholder="?"><input class="input" data-scv="${b}" inputmode="decimal" value="${v[b]}">`).join('')}
+      </div>
+      <div id="scr-preview" class="scr-preview"></div>
+      <div class="stack" style="margin-top:14px"><button type="button" class="btn block primary" data-scr-save="1">✓ Enregistrer le bilan</button><button type="button" class="btn block ghost" data-scr-cancel="1">Annuler</button></div>`,
+    onMount(sheet, close) {
+      let src = v.src || 'manuel', appli = v.appli || '', target = day;
+      const num = k => { const x = parseFloat(String($(`[data-scv="${k}"]`, sheet).value).replace(',', '.')); return Number.isFinite(x) && x >= 0 ? x : null; };
+      const preview = () => {
+        const sc = { kcal: num('kcal'), p: num('p'), g: num('g'), l: num('l') };
+        const box = $('#scr-preview', sheet);
+        if ([sc.kcal, sc.p, sc.g, sc.l].some(x => x == null)) { box.innerHTML = '<span class="small faint">Remplis les 4 valeurs « Mangé » pour voir tes points.</span>'; return; }
+        const goals = { kcal: num('ok') || t.kcal, p: num('op') || t.p, g: num('og') || t.g, l: num('ol') || t.l };
+        const r = screenScore(sc, goals);
+        box.innerHTML = r.parts.map(x => `<div class="scr-line"><span>${x.lab} <small>${esc(x.note)}</small></span>${ptsHtml(x.pts)}</div>`).join('') + `<div class="scr-line tot"><span>Total de la journée</span>${ptsHtml(r.total)}</div>`;
+      };
+      sheet.addEventListener('input', e => { if (e.target.dataset.scv) preview(); });
+      sheet.addEventListener('click', e => {
+        const d = e.target.closest('[data-scr-day]');
+        if (d) { target = d.dataset.scrDay; sheet.querySelectorAll('[data-scr-day]').forEach(b => b.classList.toggle('on', b === d)); }
+        if (e.target.closest('[data-scr-cancel]')) close(null);
+        if (e.target.closest('[data-scr-save]') && saveIt()) close('ok');
+      });
+      preview();
+      if (url && blob && aiReady()) {
+        aiReadScreen(blob).then(b => {
+          if (!sheet.isConnected) return;
+          const set = (k, x) => { const el = $(`[data-scv="${k}"]`, sheet); if (el && Number.isFinite(x)) el.value = Math.round(x * 10) / 10; };
+          set('kcal', b.consomme.kcal); set('p', b.consomme.prot); set('g', b.consomme.gluc); set('l', b.consomme.lip);
+          if (b.objectifs_visibles) { if (b.objectifs.kcal > 0) set('ok', b.objectifs.kcal); if (b.objectifs.prot > 0) set('op', b.objectifs.prot); if (b.objectifs.gluc > 0) set('og', b.objectifs.gluc); if (b.objectifs.lip > 0) set('ol', b.objectifs.lip); }
+          src = 'ia'; appli = b.appli || '';
+          if (/^\d{4}-\d{2}-\d{2}$/.test(b.date || '') && (b.date === today || b.date === addDays(today, -1)) && b.date !== target) { target = b.date; sheet.querySelectorAll('[data-scr-day]').forEach(x => x.classList.toggle('on', x.dataset.scrDay === target)); }
+          $('#scr-status', sheet).innerHTML = `🤖 Chiffres lus${appli ? ' sur ' + esc(appli) : ''}${b.objectifs_visibles ? ', objectifs compris' : ' (objectifs non visibles : ceux de l’app)'}. Vérifie puis enregistre.`;
+          preview();
+        }).catch(err => { if (sheet.isConnected) $('#scr-status', sheet).innerHTML = `<span class="decay-warn">${esc(err.message)}</span>`; });
+      }
+      const saveIt = () => {
+        const sc = { kcal: num('kcal'), p: num('p'), g: num('g'), l: num('l') };
+        if ([sc.kcal, sc.p, sc.g, sc.l].some(x => x == null)) { toast('Chiffres manquants', 'Remplis calories, protéines, glucides et lipides.', 'warn'); return false; }
+        state.dayScreens.filter(x => x.date === target).forEach(x => tomb(x.id));
+        state.dayScreens = state.dayScreens.filter(x => x.date !== target).concat({ id: uid(), date: target, ...sc, ok: num('ok') || 0, op: num('op') || 0, og: num('og') || 0, ol: num('ol') || 0, src, appli, ts: Date.now(), u: Date.now() });
+        save(); render();
+        const r = screenScore(screenFor(target), screenGoals(screenFor(target), target));
+        toast('Bilan enregistré', `${r.total >= 0 ? '+' : '−'}${fmtNum(Math.abs(r.total))} XP pour la journée · ${r.parts.map(x => x.lab + ' ' + (x.pts >= 0 ? '+' : '') + x.pts).join(' · ')}`, r.total >= 0 ? 'info' : 'warn');
+        if (r.total >= 0) { sfx('success'); haptic(); } else { sfx('fail'); haptic(2); }
+        return true;
+      };
+    },
+  }).then(val => { if (url) URL.revokeObjectURL(url); });
+}
 async function aiAnalyze(text) {
   const k = normTxt(text);
   const cached = aiCacheGet(k);
@@ -3578,7 +3798,7 @@ const QUEST_XP = 100, QUEST_PENALTY_XP = 50;
 const isPhysical = l => !l.bad && (l.activityId === 'sport' || /sport|muscu|course|salle|boxe|foot|cardio|natation/i.test(l.name) || (l.stats.includes('physique') && l.activityId !== 'travail' && !/travail/i.test(l.name)));
 const isFocus = l => !l.bad && (['live', 'clips', 'lecture', 'youtube', 'videos'].includes(l.activityId) || /live|clip|montage|lecture|apprenti|cours|projet|youtube|vid[ée]o/i.test(l.name) || ((l.stats.includes('intelligence') || l.stats.includes('concentration')) && !isPhysical(l)));
 function questIndex() {
-  const key = state.logs.length + '|' + state.meals.length + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0) + '|' + state.reps.length + ':' + state.reps.reduce((t, r) => t + r.n, 0);
+  const key = state.logs.length + '|' + state.meals.length + '|' + state.dayScreens.map(x => x.date).join(',') + '|' + state.bilans.length + '|' + JSON.stringify(state.questCfg) + '|' + state.logs.reduce((t, l) => t + (l.minutes || 0), 0) + '|' + state.reps.length + ':' + state.reps.reduce((t, r) => t + r.n, 0);
   if (questIndex._k === key) return questIndex._v;
   const byDate = new Map();
   const get = d => { if (!byDate.has(d)) byDate.set(d, { phys: 0, focus: 0, waste: 0, pushups: 0, meals: new Set(), bilan: false }); return byDate.get(d); };
@@ -3602,7 +3822,10 @@ function dailyQuest(date) {
   if (cfg.pushups > 0) goals.push({ key: 'pushups', icon: '💪', label: `${cfg.pushups} pompes`, cur: o.pushups, target: cfg.pushups, unit: '', reps: true });
   if (cfg.sport > 0) goals.push({ key: 'sport', icon: '🏋️', label: 'Entraînement physique', cur: o.phys, target: cfg.sport, unit: 'min' });
   if (cfg.focus > 0) goals.push({ key: 'focus', icon: '🎯', label: 'Travail concentré', hint: 'live, clips, vidéos YouTube, mes vidéos, apprentissage', cur: o.focus, target: cfg.focus, unit: 'min' });
-  if (cfg.meals > 0) goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
+  if (cfg.meals > 0) {
+    if (date >= SCREEN_START) goals.push({ key: 'meals', icon: '📸', label: 'Screen nutrition envoyé', hint: 'onglet Repas, en fin de journée', cur: screenFor(date) ? 1 : 0, target: 1, unit: '' });
+    else goals.push({ key: 'meals', icon: '🍽️', label: 'Repas notés', cur: main, target: cfg.meals, unit: '' });
+  }
   if (cfg.bilan) goals.push({ key: 'waste', icon: '⛔', label: 'Temps perdu limité', hint: 'déclaré dans « mal fait »', cur: o.waste, target: cfg.waste, unit: 'min', max: true });
   goals.forEach(g => { g.done = g.max ? g.cur <= g.target : g.cur >= g.target; });
   return { goals, done: goals.length > 0 && goals.every(g => g.done), count: goals.filter(g => g.done).length };
@@ -3683,7 +3906,7 @@ function renderQuestWindow(today, day = today) {
         ${q.goals.map((g, i) => { const rr = goalRatio(g), gl = g.max ? 0 : Math.min(5, Math.floor(rr)), arm = g.key === 'pushups' ? pushArm(g.cur) : ''; return `
           <div class="qw-goal casc ${g.done ? 'done' : ''} ${g.max && !g.done ? 'over' : ''} ${(ui.justDone || []).includes(g.key) ? 'just' : ''} ${gl >= 2 ? 'gl gl' + gl : ''} ${arm ? 'has-arm' : ''} ${g.key === 'pushups' && g.cur >= 1000 ? 'p1000-ok' : ''}" style="--j:${i}" ${g.key === 'pushups' && g.cur >= 1000 ? `data-p1000="${day}" role="button"` : ''}>
             <span class="qw-ico ${arm ? 'arm' : ''}">${arm || g.icon}</span>
-            <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}${g.key === 'meals' && !g.done ? `<button type="button" class="qw-link" data-meals-for="${day}">＋ noter les repas ›</button>` : ''}</span>
+            <span class="qw-lab">${g.label}${g.hint ? `<small>${g.hint}</small>` : ''}${g.key === 'meals' && !g.done ? `<button type="button" class="qw-link" data-meals-for="${day}">${day >= SCREEN_START ? "📸 envoyer le screen ›" : "＋ noter les repas ›"}</button>` : ''}</span>
             <b class="qw-val">${g.max ? `${fmtNum(g.cur)}/${g.target} min max` : g.unit ? `${fmtNum(Math.min(g.cur, 9999))}/${g.target} ${g.unit}` : g.reps ? `${fmtNum(g.cur)}/${g.target}` : `${Math.min(g.cur, g.target)}/${g.target}`}</b>
             <i class="qw-check" aria-hidden="true">${g.max && !g.done ? '✕' : '✓'}</i>
             <em class="qw-prog ${g.max ? 'max' : ''}" style="width:${g.max ? Math.min(100, (g.cur / Math.max(1, g.target)) * 100) : Math.min(100, (g.cur / g.target) * 100)}%"></em>
@@ -4012,7 +4235,7 @@ function monthReport(ym, today) {
   const end = lastDay < today ? lastDay : today;
   const logs = state.logs.filter(l => l.date >= first && l.date <= end);
   const nd = [...nutritionDays(today)].filter(d => d >= first && d <= end);
-  const xp = logs.reduce((s, l) => s + l.xp, 0) + nd.length * NUTRI_XP;
+  const xp = logs.reduce((s, l) => s + l.xp, 0) + [...nutritionXpByDay(today)].filter(([d]) => d >= first && d <= end).reduce((t, [, x]) => t + x, 0);
   const byAct = new Map();
   for (const l of logs) {
     const k = l.activityId || l.name;
@@ -4350,7 +4573,7 @@ function renderSettings() {
           <li><b>XP</b> : 1 XP par minute (max 4 h par entrée). "Fait" sans durée = ${RULES.doneXp} XP. Facile ×0,8 · Intense ×1,3.</li>
           <li><b>Niveau</b> : chaque niveau demande plus d'XP que le précédent. Comme dans la vraie vie, ça prend du temps : avec ~2 h d'activité par jour, rang D ≈ 3 mois, C ≈ 1 an, B ≈ 3 ans, A ≈ 6 ans, S ≈ 12 ans.</li>
           <li><b>Rang</b> : E (niv. 1) → D (10) → C (20) → B (35) → A (50) → S (70).</li>
-          <li><b>Nutrition</b> : une journée terminée avec 3 repas notés, calories entre objectif −400 et objectif +100, et protéines ≥ 80 % = +${NUTRI_XP} XP et +1 point de Discipline.</li>
+          <li><b>Nutrition</b> (depuis le 23 novembre) : chaque soir, envoie le screen de ton appli nutrition dans Repas. Protéines atteintes = jusqu'à +50 XP, glucides au-dessus = −1 XP par %, lipides au-dessus = −1,5 XP par %, calories pile = +15. Pas de screen = −40 XP. Un bilan positif = +1 point de Discipline. Avant le 23 novembre : 3 repas notés dans la cible = +${NUTRI_XP} XP.</li>
           <li><b>Corps</b> : l'hologramme ne s'affine qu'avec ton vrai poids. Perte réaliste : 0,5 à 1 kg par semaine.</li>
           <li><b>Notes de quêtes</b> : le Système les lit. « Intense, record, concentré » = jusqu'à ×1,5 d'XP ; « distrait, fatigué, pas motivé » = jusqu'à ×0,6.</li>
           <li><b>Ce que j'ai mal fait</b> (onglet Aujourd'hui) : −1 XP par minute (−25 XP pour « 1 fois ») et les stats concernées baissent, plus fort que les gains (×1,25). Une journée où le mal l'emporte fait reculer tes stats et supprime le bonus de régularité.</li>
@@ -5429,6 +5652,21 @@ document.addEventListener('click', e => {
   if (md && !md.disabled) { ui.mealDay = addDays(ui.mealDay || todayKey(), +md.dataset.mealDay); if (ui.mealDay >= todayKey()) ui.mealDay = null; return render(); }
   const af = t.closest('#view [data-add-food]');
   if (af) { loadCiqual().catch(() => {}); return openFoodSheet(af.dataset.addFood); }
+  const scb = t.closest('#view [data-screen]');
+  if (scb) { pickScreen(scb.dataset.screen); return; }
+  const sce = t.closest('#view [data-screen-edit]');
+  if (sce) { openScreenSheet(sce.dataset.screenEdit, null, null, null); return; }
+  const scd = t.closest('#view [data-screen-del]');
+  if (scd) {
+    const d = scd.dataset.screenDel;
+    confirmBox('Supprimer ce bilan ?', d < todayKey() ? 'Sans screen, cette journée comptera −40 XP.' : 'Tu pourras en renvoyer un ce soir.', 'Supprimer', true).then(ok => {
+      if (!ok) return;
+      state.dayScreens.filter(x => x.date === d).forEach(x => tomb(x.id));
+      state.dayScreens = state.dayScreens.filter(x => x.date !== d);
+      save(); render(); toast('Bilan supprimé');
+    });
+    return;
+  }
   const mp = t.closest('#view [data-meal-photo]');
   if (mp) { photoTarget = { kind: 'meal', meal: mp.dataset.mealPhoto, date: ui.mealDay || todayKey() }; return $('#photo-file').click(); }
   const dfo = t.closest('#view [data-del-food]');
@@ -5575,6 +5813,7 @@ document.addEventListener('change', e => {
     save();
     toast('Profil mis à jour', key === 'kcalTarget' || key === 'heightCm' || key === 'age' ? `Objectif : ${fmtNum(nutritionTargets().kcal)} kcal/jour` : '');
   }
+  if (e.target.id === 'screen-file' && e.target.files && e.target.files[0]) { onScreenFile(e.target.files[0]); return; }
   if (e.target.id === 'photo-file' && e.target.files && e.target.files.length) {
     addPhotos([...e.target.files]);
     e.target.value = '';
@@ -5614,9 +5853,9 @@ function mergeStates(a, b, preferB = false) {
     const keep = (arr, t) => arr.filter(x => (x.ts || x.u || 0) > newer.replacedAt && !t[x.id]);
     const out = JSON.parse(JSON.stringify(newer));
     // on garde quand même ce que l'autre appareil a ajouté APRÈS la remise à zéro
-    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps', 'customFoods', 'customExercises', 'customJunk']) {
+    for (const k of ['logs', 'meals', 'weights', 'journals', 'bilans', 'reps', 'customFoods', 'customExercises', 'customJunk', 'dayScreens']) {
       const ids = new Set(out[k].map(x => x.id));
-      out[k] = out[k].concat(keep(older[k], out.tombstones).filter(x => !ids.has(x.id)));
+      out[k] = (out[k] || []).concat(keep(older[k] || [], out.tombstones).filter(x => !ids.has(x.id)));
     }
     return out;
   }
@@ -5661,6 +5900,7 @@ function mergeStates(a, b, preferB = false) {
     customFoods: union(a.customFoods || [], b.customFoods || []),
     customExercises: union(a.customExercises || [], b.customExercises || []),
     customJunk: union(a.customJunk || [], b.customJunk || []),
+    dayScreens: oneByDate(union(a.dayScreens || [], b.dayScreens || [])),
   };
 }
 
