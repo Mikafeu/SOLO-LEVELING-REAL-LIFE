@@ -6,7 +6,7 @@
 
 /* ⚠️ À chaque mise à jour : augmenter ce numéro ICI, dans sw.js
    et dans index.html (?v=...). Le script tests/check-version.js vérifie. */
-const APP_VERSION = '3.9.0';
+const APP_VERSION = '3.10.0';
 
 const STORAGE_KEY = 'monSysteme.save';
 const SCHEMA = 1;
@@ -286,7 +286,7 @@ function sanitizeState(raw) {
   s.dayScreens = (Array.isArray(raw.dayScreens) ? raw.dayScreens : [])
     .filter(x => x && isValidKey(x.date) && Number.isFinite(x.kcal))
     .map(x => ({ id: typeof x.id === 'string' ? x.id : uid(), date: x.date, kcal: nb(x.kcal, 0, 20000), p: nb(x.p, 0, 1000), g: nb(x.g, 0, 2000), l: nb(x.l, 0, 1000),
-      ok: nb(x.ok, 0, 10000), op: nb(x.op, 0, 1000), og: nb(x.og, 0, 2000), ol: nb(x.ol, 0, 1000), src: x.src === 'ia' ? 'ia' : 'manuel',
+      ok: nb(x.ok, 0, 10000), op: nb(x.op, 0, 1000), og: nb(x.og, 0, 2000), ol: nb(x.ol, 0, 1000), src: x.src === 'ia' || x.src === 'ocr' ? x.src : 'manuel',
       appli: typeof x.appli === 'string' ? x.appli.slice(0, 30) : '', ts: Number.isFinite(x.ts) ? x.ts : 0, u: Number.isFinite(x.u) ? x.u : 0 }));
   s.reps = (Array.isArray(raw.reps) ? raw.reps : [])
     .filter(r => r && isValidKey(r.date) && Number.isFinite(r.n) && r.n > 0 && r.n <= 1000)
@@ -2450,7 +2450,7 @@ function screenPanelHtml(day, compact = false) {
         ${row('Glucides', sc.g, goals.g, 'g', 'mg', P('g'))}
         ${row('Lipides', sc.l, goals.l, 'g', 'ml', P('l'))}
       </div>
-      <p class="small faint" style="margin:8px 0 0">${sc.src === 'ia' ? '🤖 Lu sur le screen' : '✍️ Chiffres saisis'}${sc.appli ? ' · ' + esc(sc.appli) : ''}${sc.ok > 0 ? ' · objectifs de ton appli' : ' · objectifs de l’app'}</p>
+      <p class="small faint" style="margin:8px 0 0">${sc.src === 'ia' ? '🤖 Lu sur le screen (IA)' : sc.src === 'ocr' ? '🔎 Lu sur le screen' : '✍️ Chiffres saisis'}${sc.appli ? ' · ' + esc(sc.appli) : ''}${sc.ok > 0 ? ' · objectifs de ton appli' : ' · objectifs de l’app'}</p>
       ${compact ? '' : `<div class="btn-row" style="margin-top:10px"><button class="btn small" data-screen="${day}">📸 Nouveau screen</button><button class="btn small" data-screen-edit="${day}">✍️ Corriger</button><button class="btn small ghost" data-screen-del="${day}">✕</button></div>`}
     </section>`;
 }
@@ -2873,6 +2873,170 @@ async function aiReadScreen(blob) {
   if (!b.lisible) throw new Error('Ce screen ne ressemble pas à un bilan nutritionnel.');
   return b;
 }
+/* ---------- Lecture du screen SUR LE TÉLÉPHONE (sans IA, sans clé, hors connexion) ----------
+   Tesseract.js (OCR libre) lit le texte, puis on cherche pour chaque valeur « mangé / objectif ». */
+let _ocrWorker = null;
+function loadScript(src) {
+  return new Promise((res, rej) => { if (window.Tesseract) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Lecteur d’image introuvable')); document.head.appendChild(s); });
+}
+async function ocrWorker(onProgress) {
+  if (_ocrWorker) return _ocrWorker;
+  await loadScript('vendor/tesseract/tesseract.min.js');
+  const base = new URL('vendor/tesseract/', location.href).href;
+  _ocrWorker = await Tesseract.createWorker('fra', 1, {
+    workerPath: base + 'worker.min.js', corePath: base + 'core', langPath: base + 'lang', workerBlobURL: false,
+    logger: m => { if (onProgress && m && typeof m.progress === 'number') onProgress(m.status, m.progress); },
+  });
+  return _ocrWorker;
+}
+/* image plus facile à lire : niveaux de gris, fond sombre inversé, agrandie si petite */
+async function ocrPrepare(blob) {
+  const img = await blobToImage(blob);
+  const k = img.naturalWidth < 800 ? 2 : img.naturalWidth > 2400 ? 0.5 : 1; // taille d'origine : les chiffres restent nets
+  const w = img.naturalWidth * k, h = img.naturalHeight * k;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d'); x.drawImage(img, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h), px = d.data;
+  let sum = 0;
+  for (let i = 0; i < px.length; i += 4) { const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; px[i] = px[i + 1] = px[i + 2] = g; sum += g; }
+  if (sum / (px.length / 4) < 120) for (let i = 0; i < px.length; i += 4) px[i] = px[i + 1] = px[i + 2] = 255 - px[i];
+  x.putImageData(d, 0, 0);
+  return c;
+}
+const OCR_LAB = { kcal: /^(calories?|kcal|cal|energie|energy|apport|mange|manges|consomme|consommees?|eaten|aliments)$/, p: /^(proteines?|proteins?|prot)$/, g: /^(glucides?|carbs?|carbohydrates?|gluc)$/, l: /^(lipides?|graisses?|fats?|lip|matieres)$/ };
+const ocrNorm = t => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+/* « 2 540 » / « 2,540 » / « 17,5 » / « 176g » → nombre */
+function ocrNum(t) {
+  t = String(t).replace(/[^\d.,\s]/g, '').trim();
+  if (/^\d{1,2}[\s.,]\d{3}$/.test(t)) return +t.replace(/[\s.,]/g, '');
+  const v = parseFloat(t.replace(/\s/g, '').replace(',', '.'));
+  return Number.isFinite(v) ? v : null;
+}
+/* nombres d'un bout de texte, avec « A / B » (mangé / objectif) et « X restant » */
+function ocrPair(txt) {
+  const t = ocrNorm(txt).replace(/(\d)\s+(\d{3})(?!\d)/g, '$1$2');
+  const pair = t.match(/(\d+(?:[.,]\d+)?)\s*(?:g|kcal|cal)?\s*(?:\/|\||sur|of|de|I(?=\s*\d))\s*(\d+(?:[.,]\d+)?)/i);
+  if (pair) {
+    const eat = ocrNum(pair[1]); let goal = ocrNum(pair[2]);
+    if (eat != null && goal != null && goal > eat * 4 && /9$/.test(pair[2]) && /\d9(?![\d.,])/.test(t.slice(pair.index + pair[0].length - 2, pair.index + pair[0].length + 1))) goal = Math.floor(goal / 10); // « 75g » lu « 759 »
+    return { eat, goal };
+  }
+  const nums = [...t.matchAll(/\d+(?:[.,]\d+)?/g)].map(m => ({ v: ocrNum(m[0]), i: m.index }));
+  if (!nums.length) return null;
+  const rest = t.match(/(\d+(?:[.,]\d+)?)\s*(?:g|kcal)?\s*(?:restante?s?|left|remaining)|(?:restante?s?|left|remaining)\s*:?\s*(\d+(?:[.,]\d+)?)/);
+  const goal = t.match(/(?:objectif|goal|but)\s*:?\s*(\d+(?:[.,]\d+)?)/);
+  const out = { eat: null, goal: goal ? ocrNum(goal[1]) : null, left: rest ? ocrNum(rest[1] || rest[2]) : null };
+  const used = new Set([out.goal, out.left].filter(v => v != null));
+  const free = nums.map(n => n.v).filter(v => !used.has(v));
+  if (free.length) out.eat = free[0];
+  return out;
+}
+function parseNutritionOcr(data) {
+  // mots ; « 2 » + « 540 » collés (espace des milliers) → « 2540 »
+  const mkWords = ws => {
+    const out = [];
+    const split = [];
+    for (const w0 of ws || []) {
+      // « Fat58/75g », « Protéines176/170g » : libellé et nombre collés → deux mots
+      const m = (w0.text || '').match(/^([A-Za-zÀ-ÿ]{3,})(\d.*)$/);
+      if (m) { const cut = w0.bbox.x0 + (w0.bbox.x1 - w0.bbox.x0) * m[1].length / w0.text.length; split.push({ text: m[1], bbox: { ...w0.bbox, x1: cut } }, { text: m[2], bbox: { ...w0.bbox, x0: cut + 1 } }); }
+      else split.push(w0);
+    }
+    for (const w0 of split) {
+      const w = { t: ocrNorm(w0.text || '').replace(/[^a-z0-9]/g, ''), raw: w0.text || '', b: { ...w0.bbox } };
+      const prev = out[out.length - 1], hgt = Math.max(6, w.b.y1 - w.b.y0);
+      if (prev && /^\d{1,2}$/.test(prev.raw.trim()) && /^\d{3}(?!\d)/.test(w.raw.trim()) && w.b.x0 - prev.b.x1 < hgt * 0.9 && Math.abs(w.b.y1 - prev.b.y1) < hgt * 0.5) {
+        prev.raw = prev.raw.trim() + w.raw.trim(); prev.t = ocrNorm(prev.raw).replace(/[^a-z0-9]/g, ''); prev.b.x1 = w.b.x1; continue;
+      }
+      out.push(w);
+    }
+    return out;
+  };
+  const lines = (data.lines || []).map(L => { const words = mkWords(L.words); return { text: L.text || '', n: ocrNorm(words.map(w => w.raw).join(' ')), b: L.bbox, words }; });
+  const isLab = w => Object.values(OCR_LAB).some(re => re.test(w.t));
+  const res = { kcal: null, p: null, g: null, l: null, ok: null, op: null, og: null, ol: null };
+  const set = (k, eat, goal) => { const ko = { kcal: 'ok', p: 'op', g: 'og', l: 'ol' }[k]; if (res[k] == null && eat != null) res[k] = eat; if (res[ko] == null && goal != null) res[ko] = goal; };
+  // 1) tableau (ex. MyFitnessPal : en-têtes Calories Glucides Lipides Protéines, lignes Totaux / Objectif)
+  for (let i = 0; i < lines.length; i++) {
+    const heads = [];
+    for (const w of lines[i].words) for (const k of Object.keys(OCR_LAB)) if (OCR_LAB[k].test(w.t) && !heads.some(h => h.k === k)) heads.push({ k, x: (w.b.x0 + w.b.x1) / 2 });
+    if (heads.length < 3 || !lines.slice(i + 1, i + 8).some(L => /\b(totaux|total|totals|objectif|goal)\b/.test(L.n))) continue;
+    const rows = { tot: null, goal: null, rest: null };
+    for (const L of lines.slice(i + 1, i + 8)) {
+      const kind = /\b(totaux|total|totals|consomme|mange)\b/.test(L.n) ? 'tot' : /\b(objectif|goal|objectifs)\b/.test(L.n) ? 'goal' : /\b(restante?s?|remaining|left)\b/.test(L.n) ? 'rest' : null;
+      if (!kind || rows[kind]) continue;
+      const nums = L.words.filter(w => /^-?\d/.test(w.raw.trim())).map(w => ({ v: (/^-/.test(w.raw.trim()) ? -1 : 1) * ocrNum(w.raw), x: (w.b.x0 + w.b.x1) / 2 }));
+      if (nums.length < heads.length - 1) continue;
+      rows[kind] = {};
+      for (const h of heads) { const near = nums.slice().sort((a, b) => Math.abs(a.x - h.x) - Math.abs(b.x - h.x))[0]; if (near) rows[kind][h.k] = near.v; }
+    }
+    for (const h of heads) {
+      const tot = rows.tot && rows.tot[h.k], rest = rows.rest && rows.rest[h.k];
+      let goal = rows.goal && rows.goal[h.k];
+      if (tot != null && rest != null && Number.isFinite(tot + rest) && (goal == null || Math.abs(goal - (tot + rest)) > 1)) goal = tot + rest; // objectif = mangé + restant
+      set(h.k, tot != null ? tot : null, goal != null ? goal : null);
+    }
+  }
+  // 2) libellé + nombres sur la même ligne, ou juste en dessous / au-dessus
+  for (const k of Object.keys(OCR_LAB)) {
+    for (let i = 0; i < lines.length && (res[k] == null || res[{ kcal: 'ok', p: 'op', g: 'og', l: 'ol' }[k]] == null); i++) {
+      const L = lines[i], wi = L.words.findIndex(w => OCR_LAB[k].test(w.t));
+      if (wi < 0) continue;
+      const lw = L.words[wi];
+      const after = L.words.slice(wi + 1).map(w => w.raw).join(' ');
+      const before = L.words.slice(0, wi).map(w => w.raw).join(' ');
+      let r = /\d/.test(after) ? ocrPair(after) : null;
+      // nombre AVANT le libellé (« 2 540 kcal », « Mangé 2 540 kcal »), si aucun autre libellé n'est entre les deux
+      if ((!r || r.eat == null) && /\d/.test(before) && !L.words.slice(0, wi).some(isLab)) { const rb = ocrPair(before); if (rb && (rb.eat != null || rb.goal != null)) r = { ...rb, ...(r && r.goal != null ? { goal: r.goal } : {}) }; }
+      if (!r || r.eat == null) {
+        // colonnes côte à côte : un mot appartient au libellé le plus proche horizontalement
+        const labs = L.words.filter(isLab), cx = w => (w.b.x0 + w.b.x1) / 2;
+        const mine = w => labs.length < 2 || labs.reduce((a, b) => (Math.abs(cx(b) - cx(w)) < Math.abs(cx(a) - cx(w)) ? b : a)) === lw;
+        // libellé seul : on prend la ligne la plus proche juste dessous (puis dessus) qui chevauche le libellé
+        const h = Math.max(8, lw.b.y1 - lw.b.y0);
+        const cand = lines.filter(M => M !== L && /\d/.test(M.n) && !M.words.some(isLab) && M.b.x0 < lw.b.x1 + h * 6 && M.b.x1 > lw.b.x0 - h * 6 && Math.abs((M.b.y0 + M.b.y1) / 2 - (lw.b.y0 + lw.b.y1) / 2) < h * 3.5)
+          .sort((a, b) => Math.abs((a.b.y0 + a.b.y1) / 2 - (lw.b.y0 + lw.b.y1) / 2) - Math.abs((b.b.y0 + b.b.y1) / 2 - (lw.b.y0 + lw.b.y1) / 2));
+        for (const M of cand) {
+          const labsM = labs.length >= 2 ? labs : [lw];
+          const part = M.words.filter(w => (labsM.length >= 2 ? mine(w) : true) && w.b.x1 > lw.b.x0 - h * 6 && w.b.x0 < lw.b.x1 + h * 6).map(w => w.raw).join(' ');
+          r = /\d/.test(part) ? ocrPair(part) : null; if (r && r.eat != null) break;
+        }
+      }
+      if (r && r.eat != null) set(k, r.eat, r.goal != null ? r.goal : r.left != null ? r.eat + r.left : null);
+    }
+  }
+  // 3) calories façon MyFitnessPal : « Objectif − Aliments + Exercice = Restant »
+  if (res.kcal == null || res.ok == null) {
+    const full = lines.map(L => L.n).join(' \n ');
+    const m = full.match(/(\d[\d\s]{2,6})\s*[-–]\s*(\d[\d\s]{1,6})\s*\+\s*(\d[\d\s]{0,6})\s*=\s*(-?\d[\d\s]{0,6})/);
+    if (m) set('kcal', ocrNum(m[2]), ocrNum(m[1]));
+    const eatW = full.match(/(?:mange|consomme|aliments|eaten|food)\D{0,12}(\d[\d\s]{2,6})/), goalW = full.match(/(?:objectif|goal)\D{0,12}(\d[\d\s]{2,6})/);
+    if (eatW) set('kcal', ocrNum(eatW[1]), null);
+    if (goalW) set('kcal', null, ocrNum(goalW[1]));
+  }
+  // garde-fous : valeurs plausibles
+  const lim = { kcal: [300, 9000], p: [0, 600], g: [0, 1500], l: [0, 600] };
+  for (const [k, ko] of [['kcal', 'ok'], ['p', 'op'], ['g', 'og'], ['l', 'ol']]) {
+    if (res[k] != null && (res[k] < lim[k][0] || res[k] > lim[k][1])) res[k] = null;
+    if (res[ko] != null && (res[ko] < Math.max(1, lim[k][0]) || res[ko] > lim[k][1])) res[ko] = null;
+  }
+  // calories : absentes ou incohérentes avec les macros (mal lues) → 4 × P + 4 × G + 9 × L
+  if (res.p != null && res.g != null && res.l != null) {
+    const est = Math.round(4 * res.p + 4 * res.g + 9 * res.l);
+    if (res.kcal == null || Math.abs(res.kcal - est) / est > 0.35) res.kcal = est;
+  }
+  // objectif invraisemblable par rapport à ce qui est mangé (chiffre mal lu) → on garde l'objectif de l'app
+  for (const [k, ko] of [['kcal', 'ok'], ['p', 'op'], ['g', 'og'], ['l', 'ol']]) if (res[k] != null && res[ko] != null && res[k] > 0 && (res[ko] / res[k] < 0.33 || res[ko] / res[k] > 3)) res[ko] = null;
+  return res;
+}
+async function ocrReadScreen(blob, onProgress) {
+  const w = await ocrWorker(onProgress);
+  const canvas = await ocrPrepare(blob);
+  const { data } = await w.recognize(canvas);
+  const r = parseNutritionOcr(data);
+  r._text = (data.text || '').slice(0, 2000);
+  return r;
+}
 let screenTargetDay = null;
 function pickScreen(day) {
   screenTargetDay = day;
@@ -2884,10 +3048,10 @@ async function onScreenFile(file) {
   const day = screenTargetDay || todayKey();
   let blob, url;
   try { blob = await resizePhoto(file, 1600); url = URL.createObjectURL(blob); } catch (e) { toast('Image illisible', e.message || '', 'warn'); return; }
-  openScreenSheet(day, null, url, blob);
+  openScreenSheet(day, null, url, blob, file);
 }
 /* feuille de vérification : chiffres lus (ou à saisir) + aperçu des points */
-function openScreenSheet(day, prefill, url, blob) {
+function openScreenSheet(day, prefill, url, blob, original) {
   const t = nutritionTargets(day);
   const old = screenFor(day);
   const v = prefill || (old ? { kcal: old.kcal, p: old.p, g: old.g, l: old.l, ok: old.ok || t.kcal, op: old.op || t.p, og: old.og || t.g, ol: old.ol || t.l, src: old.src, appli: old.appli } : { kcal: '', p: '', g: '', l: '', ok: t.kcal, op: t.p, og: t.g, ol: t.l, src: 'manuel', appli: '' });
@@ -2898,7 +3062,7 @@ function openScreenSheet(day, prefill, url, blob) {
     title: '📸 Ma journée',
     body: `
       ${url ? `<div class="scr-shot"><img src="${url}" alt="Capture"></div>` : ''}
-      <div id="scr-status" class="small muted" style="margin:8px 0">${url && aiReady() ? '<span class="scr-wait">🤖 Lecture du screen en cours…</span>' : url ? 'Lecture automatique non configurée : recopie les chiffres du screen.' : 'Corrige les chiffres si besoin.'}</div>
+      <div id="scr-status" class="small muted" style="margin:8px 0">${url ? '<span class="scr-wait">🔎 Lecture du screen en cours…</span>' : 'Corrige les chiffres si besoin.'}</div>
       <div class="scr-days">${[today, addDays(today, -1)].map(d => `<button type="button" class="fchip ${d === day ? 'on' : ''}" data-scr-day="${d}">${d === today ? "Aujourd'hui" : 'Hier'}</button>`).join('')}</div>
       <div class="scr-grid">
         <span></span><b>Mangé</b><b>Objectif</b>
@@ -2925,6 +3089,25 @@ function openScreenSheet(day, prefill, url, blob) {
         if (e.target.closest('[data-scr-save]') && saveIt()) close('ok');
       });
       preview();
+      const fill = (r, how) => {
+        const setv = (k, x) => { const el = $(`[data-scv="${k}"]`, sheet); if (el && Number.isFinite(x)) el.value = Math.round(x * 10) / 10; };
+        ['kcal', 'p', 'g', 'l', 'ok', 'op', 'og', 'ol'].forEach(k => setv(k, r[k]));
+        preview();
+        const miss = ['kcal', 'p', 'g', 'l'].filter(k => !Number.isFinite(r[k]));
+        const lab = { kcal: 'calories', p: 'protéines', g: 'glucides', l: 'lipides' };
+        if (!miss.length) {
+          // tout est lu : on enregistre tout seul (tu peux corriger ensuite avec « Corriger »)
+          $('#scr-status', sheet).innerHTML = `✓ Chiffres lus ${how}. Enregistrement…`;
+          setTimeout(() => { if (sheet.isConnected && saveIt(true)) close('ok'); }, 700);
+        } else $('#scr-status', sheet).innerHTML = `<span class="decay-warn">Lu ${how}, mais je n’ai pas trouvé : ${miss.map(k => lab[k]).join(', ')}. Complète juste ${miss.length > 1 ? 'ces cases' : 'cette case'}.</span>`;
+      };
+      const readLocal = () => ocrReadScreen(original || blob, (st, pr) => {
+        if (!sheet.isConnected) return;
+        const what = /recogniz/.test(st) ? 'Lecture du texte' : 'Préparation du lecteur (1re fois, quelques secondes)';
+        $('#scr-status', sheet).innerHTML = `<span class="scr-wait">🔎 ${what}… ${Math.round(pr * 100)} %</span>`;
+      }).then(r => { if (sheet.isConnected) { src = 'ocr'; fill(r, 'sur le screen'); } })
+        .catch(err => { if (sheet.isConnected) $('#scr-status', sheet).innerHTML = `<span class="decay-warn">Lecture impossible (${esc(err.message || 'erreur')}). Recopie les chiffres.</span>`; });
+      if (url && blob && !aiReady()) readLocal();
       if (url && blob && aiReady()) {
         aiReadScreen(blob).then(b => {
           if (!sheet.isConnected) return;
@@ -2933,18 +3116,17 @@ function openScreenSheet(day, prefill, url, blob) {
           if (b.objectifs_visibles) { if (b.objectifs.kcal > 0) set('ok', b.objectifs.kcal); if (b.objectifs.prot > 0) set('op', b.objectifs.prot); if (b.objectifs.gluc > 0) set('og', b.objectifs.gluc); if (b.objectifs.lip > 0) set('ol', b.objectifs.lip); }
           src = 'ia'; appli = b.appli || '';
           if (/^\d{4}-\d{2}-\d{2}$/.test(b.date || '') && (b.date === today || b.date === addDays(today, -1)) && b.date !== target) { target = b.date; sheet.querySelectorAll('[data-scr-day]').forEach(x => x.classList.toggle('on', x.dataset.scrDay === target)); }
-          $('#scr-status', sheet).innerHTML = `🤖 Chiffres lus${appli ? ' sur ' + esc(appli) : ''}${b.objectifs_visibles ? ', objectifs compris' : ' (objectifs non visibles : ceux de l’app)'}. Vérifie puis enregistre.`;
-          preview();
-        }).catch(err => { if (sheet.isConnected) $('#scr-status', sheet).innerHTML = `<span class="decay-warn">${esc(err.message)}</span>`; });
+          fill({ kcal: b.consomme.kcal, p: b.consomme.prot, g: b.consomme.gluc, l: b.consomme.lip, ...(b.objectifs_visibles ? { ok: b.objectifs.kcal || null, op: b.objectifs.prot || null, og: b.objectifs.gluc || null, ol: b.objectifs.lip || null } : {}) }, 'par l’IA' + (appli ? ' (' + esc(appli) + ')' : ''));
+        }).catch(() => { if (sheet.isConnected) readLocal(); }); // relais en panne : lecture sur le téléphone
       }
-      const saveIt = () => {
+      const saveIt = auto => {
         const sc = { kcal: num('kcal'), p: num('p'), g: num('g'), l: num('l') };
         if ([sc.kcal, sc.p, sc.g, sc.l].some(x => x == null)) { toast('Chiffres manquants', 'Remplis calories, protéines, glucides et lipides.', 'warn'); return false; }
         state.dayScreens.filter(x => x.date === target).forEach(x => tomb(x.id));
         state.dayScreens = state.dayScreens.filter(x => x.date !== target).concat({ id: uid(), date: target, ...sc, ok: num('ok') || 0, op: num('op') || 0, og: num('og') || 0, ol: num('ol') || 0, src, appli, ts: Date.now(), u: Date.now() });
         save(); render();
         const r = screenScore(screenFor(target), screenGoals(screenFor(target), target));
-        toast('Bilan enregistré', `${r.total >= 0 ? '+' : '−'}${fmtNum(Math.abs(r.total))} XP pour la journée · ${r.parts.map(x => x.lab + ' ' + (x.pts >= 0 ? '+' : '') + x.pts).join(' · ')}`, r.total >= 0 ? 'info' : 'warn');
+        toast(auto ? 'Screen lu et enregistré' : 'Bilan enregistré', `${r.total >= 0 ? '+' : '−'}${fmtNum(Math.abs(r.total))} XP pour la journée · ${r.parts.map(x => x.lab + ' ' + (x.pts >= 0 ? '+' : '') + x.pts).join(' · ')}`, r.total >= 0 ? 'info' : 'warn');
         if (r.total >= 0) { sfx('success'); haptic(); } else { sfx('fail'); haptic(2); }
         return true;
       };
